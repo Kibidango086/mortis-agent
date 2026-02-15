@@ -1,0 +1,40 @@
+services:
+  # ─────────────────────────────────────────────
+  # PicoClaw Agent (one-shot query)
+  #   docker compose run --rm mortis-agent-agent -m "Hello"
+  # ─────────────────────────────────────────────
+  mortis-agent-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mortis-agent-agent
+    profiles:
+      - agent
+    volumes:
+      - ./config/config.json:/root/.mortis-agent/config.json:ro
+      - mortis-agent-workspace:/root/.mortis-agent/workspace
+    entrypoint: ["mortis-agent", "agent"]
+    stdin_open: true
+    tty: true
+
+  # ─────────────────────────────────────────────
+  # PicoClaw Gateway (Long-running Bot)
+  #   docker compose up mortis-agent-gateway
+  # ─────────────────────────────────────────────
+  mortis-agent-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mortis-agent-gateway
+    restart: unless-stopped
+    profiles:
+      - gateway
+    volumes:
+      # Configuration file
+      - ./config/config.json:/root/.mortis-agent/config.json:ro
+      # Persistent workspace (sessions, memory, logs)
+      - mortis-agent-workspace:/root/.mortis-agent/workspace
+    command: ["gateway"]
+
+volumes:
+  mortis-agent-workspace:
