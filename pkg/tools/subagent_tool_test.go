@@ -13,11 +13,11 @@ import (
 type MockLLMProvider struct{}
 
 func (m *MockLLMProvider) Chat(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, options map[string]interface{}) (*providers.LLMResponse, error) {
-	// Find the last user message to generate a response
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role == "user" {
+			content := providers.ContentToString(messages[i].Content)
 			return &providers.LLMResponse{
-				Content: "Task completed: " + messages[i].Content,
+				Content: "Task completed: " + content,
 			}, nil
 		}
 	}
@@ -26,6 +26,10 @@ func (m *MockLLMProvider) Chat(ctx context.Context, messages []providers.Message
 
 func (m *MockLLMProvider) GetDefaultModel() string {
 	return "test-model"
+}
+
+func (m *MockLLMProvider) ChatWithStream(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, opts providers.ChatOptions) (*providers.LLMResponse, error) {
+	return m.Chat(ctx, messages, tools, model, nil)
 }
 
 func (m *MockLLMProvider) SupportsTools() bool {

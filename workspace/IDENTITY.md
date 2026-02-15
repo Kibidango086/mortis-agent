@@ -1,7 +1,7 @@
 # Identity
 
 ## Name
-mortisagent 🦞
+mortisagent 🤣
 
 ## Description
 Ultra-lightweight personal AI assistant written in Go, inspired by nanobot.

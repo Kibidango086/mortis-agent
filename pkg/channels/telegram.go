@@ -2,6 +2,7 @@ package channels
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -20,15 +21,15 @@ import (
 	"github.com/Kibidango086/mortis-agent/pkg/voice"
 )
 
-// StreamState 管理单个聊天的流式状态
 type StreamState struct {
 	messageID      int
 	currentContent string
 	lastUpdate     time.Time
 	isStreaming    bool
-	stepInfo       string   // 当前步骤信息（思考中、调用工具等）
-	iteration      int      // 当前迭代次数
-	toolCalls      []string // 已调用的工具列表
+	stepInfo       string
+	iteration      int
+	toolCalls      []string
+	executionLog   *bus.ExecutionLog
 	mu             sync.RWMutex
 }
 
@@ -64,33 +65,46 @@ func (s *StreamState) GetDisplayContent() string {
 
 	var parts []string
 
-	// 添加步骤信息
 	if s.stepInfo != "" {
-		parts = append(parts, fmt.Sprintf("📍 %s", s.stepInfo))
+		parts = append(parts, fmt.Sprintf("%s", s.stepInfo))
 	}
 
-	// 添加工具调用信息
 	if len(s.toolCalls) > 0 {
-		toolsStr := strings.Join(s.toolCalls, " → ")
-		parts = append(parts, fmt.Sprintf("🔧 %s", toolsStr))
+		toolsStr := strings.Join(s.toolCalls, " -> ")
+		parts = append(parts, fmt.Sprintf("Tool: %s", toolsStr))
 	}
 
-	// 添加迭代信息
 	if s.iteration > 0 {
-		parts = append(parts, fmt.Sprintf("🔄 第 %d 轮", s.iteration))
+		parts = append(parts, fmt.Sprintf("Round %d", s.iteration))
 	}
 
-	// 分隔线
 	if len(parts) > 0 && s.currentContent != "" {
-		parts = append(parts, "\n"+strings.Repeat("─", 20)+"\n")
+		parts = append(parts, "\n"+strings.Repeat("-", 20)+"\n")
 	}
 
-	// 添加主要内容
 	if s.currentContent != "" {
 		parts = append(parts, s.currentContent)
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+func (s *StreamState) AddExecutionStep(step bus.ExecutionStep) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.executionLog == nil {
+		s.executionLog = &bus.ExecutionLog{
+			Steps:     []bus.ExecutionStep{},
+			StartTime: time.Now(),
+		}
+	}
+	s.executionLog.Steps = append(s.executionLog.Steps, step)
+}
+
+func (s *StreamState) GetExecutionLog() *bus.ExecutionLog {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.executionLog
 }
 
 func (s *StreamState) GetContent() string {
@@ -117,9 +131,9 @@ type TelegramChannel struct {
 	config       config.TelegramConfig
 	chatIDs      map[string]int64
 	transcriber  *voice.GroqTranscriber
-	placeholders sync.Map // chatID -> messageID
-	stopThinking sync.Map // chatID -> thinkingCancel
-	streamStates sync.Map // chatID -> *StreamState
+	placeholders sync.Map
+	stopThinking sync.Map
+	streamStates sync.Map
 }
 
 type thinkingCancel struct {
@@ -185,7 +199,6 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 		"username": c.bot.Username(),
 	})
 
-	// 启动流式消息处理协程
 	go c.handleStreamMessages(ctx)
 
 	go func() {
@@ -200,6 +213,8 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 				}
 				if update.Message != nil {
 					c.handleMessage(ctx, update)
+				} else if update.CallbackQuery != nil {
+					c.handleCallbackQuery(ctx, update)
 				}
 			}
 		}
@@ -214,7 +229,6 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-// handleStreamMessages 处理流式消息事件
 func (c *TelegramChannel) handleStreamMessages(ctx context.Context) {
 	for {
 		select {
@@ -226,7 +240,6 @@ func (c *TelegramChannel) handleStreamMessages(ctx context.Context) {
 				continue
 			}
 
-			// 只处理 telegram 通道的消息
 			if msg.Channel != "telegram" {
 				continue
 			}
@@ -236,7 +249,6 @@ func (c *TelegramChannel) handleStreamMessages(ctx context.Context) {
 	}
 }
 
-// handleStreamEvent 处理单个流式事件
 func (c *TelegramChannel) handleStreamEvent(ctx context.Context, msg bus.StreamMessage) {
 	chatID, err := parseChatID(msg.ChatID)
 	if err != nil {
@@ -246,7 +258,6 @@ func (c *TelegramChannel) handleStreamEvent(ctx context.Context, msg bus.StreamM
 		return
 	}
 
-	// 获取或创建流式状态
 	stateInterface, _ := c.streamStates.LoadOrStore(msg.ChatID, &StreamState{})
 	state := stateInterface.(*StreamState)
 
@@ -254,43 +265,61 @@ func (c *TelegramChannel) handleStreamEvent(ctx context.Context, msg bus.StreamM
 	case bus.StreamEventThinking:
 		state.SetStep(msg.Content)
 		state.SetActive(true)
+		state.AddExecutionStep(bus.ExecutionStep{
+			Type:      "thinking",
+			Timestamp: msg.Timestamp,
+			Content:   msg.Content,
+			Iteration: msg.Iteration,
+		})
 		c.updateStreamMessage(ctx, chatID, state)
 
 	case bus.StreamEventToolCall:
 		state.AddToolCall(msg.ToolName)
 		state.iteration = msg.Iteration
+		state.AddExecutionStep(bus.ExecutionStep{
+			Type:      "tool_call",
+			Timestamp: msg.Timestamp,
+			ToolName:  msg.ToolName,
+			ToolArgs:  msg.ToolArgs,
+			Iteration: msg.Iteration,
+		})
 		c.updateStreamMessage(ctx, chatID, state)
 
 	case bus.StreamEventToolResult:
-		// 工具结果，更新状态但不立即刷新显示
 		state.SetStep("")
+		state.AddExecutionStep(bus.ExecutionStep{
+			Type:       "tool_result",
+			Timestamp:  msg.Timestamp,
+			ToolName:   msg.ToolName,
+			ToolResult: msg.ToolResult,
+			Iteration:  msg.Iteration,
+		})
 
 	case bus.StreamEventContent:
 		state.AppendContent(msg.Content)
 		state.iteration = msg.Iteration
-		// 限制更新频率，避免频繁编辑消息
 		if time.Since(state.lastUpdate) > 500*time.Millisecond {
 			c.updateStreamMessage(ctx, chatID, state)
 		}
 
 	case bus.StreamEventComplete:
-		// 流式响应完成
 		state.UpdateContent(msg.Content)
 		state.SetActive(false)
 		state.SetStep("")
-		c.finalizeStreamMessage(ctx, chatID, state)
-		// 清理状态
+		if state.executionLog != nil {
+			state.executionLog.EndTime = time.Now()
+		}
+		c.finalizeStreamMessage(ctx, chatID, state, msg.SessionKey)
 		c.streamStates.Delete(msg.ChatID)
 
 	case bus.StreamEventError:
-		state.UpdateContent(fmt.Sprintf("❌ 错误: %s", msg.Content))
+		state.UpdateContent(fmt.Sprintf("Error: %s", msg.Content))
 		state.SetActive(false)
-		c.finalizeStreamMessage(ctx, chatID, state)
+		c.finalizeStreamMessage(ctx, chatID, state, msg.SessionKey)
 		c.streamStates.Delete(msg.ChatID)
 	}
 }
 
-// updateStreamMessage 更新流式消息（用于思考中和内容生成过程）
 func (c *TelegramChannel) updateStreamMessage(ctx context.Context, chatID int64, state *StreamState) {
 	content := state.GetDisplayContent()
 	if content == "" {
@@ -299,12 +328,10 @@ func (c *TelegramChannel) updateStreamMessage(ctx context.Context, chatID int64,
 
 	htmlContent := markdownToTelegramHTML(content)
 
-	// 尝试编辑现有消息
 	if state.messageID != 0 {
 		editMsg := tu.EditMessageText(tu.ID(chatID), state.messageID, htmlContent)
 		editMsg.ParseMode = telego.ModeHTML
 		if _, err := c.bot.EditMessageText(ctx, editMsg); err != nil {
-			// 编辑失败，尝试发送新消息
 			c.sendNewStreamMessage(ctx, chatID, state, htmlContent)
 		}
 	} else {
@@ -312,14 +339,12 @@ func (c *TelegramChannel) updateStreamMessage(ctx context.Context, chatID int64,
 	}
 }
 
-// sendNewStreamMessage 发送新的流式消息
 func (c *TelegramChannel) sendNewStreamMessage(ctx context.Context, chatID int64, state *StreamState, htmlContent string) {
 	msg := tu.Message(tu.ID(chatID), htmlContent)
 	msg.ParseMode = telego.ModeHTML
 
 	sentMsg, err := c.bot.SendMessage(ctx, msg)
 	if err != nil {
-		// HTML 解析失败，尝试纯文本
 		logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]interface{}{
 			"error": err.Error(),
 		})
@@ -336,7 +361,6 @@ func (c *TelegramChannel) sendNewStreamMessage(ctx context.Context, chatID int64
 	state.messageID = sentMsg.MessageID
 }
 
-// finalizeStreamMessage 完成流式消息，发送最终内容
 func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Update) {
 	message := update.Message
 	if message == nil {
@@ -354,7 +378,6 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		senderID = fmt.Sprintf("%s|%s", userID, user.Username)
 	}
 
-	// 检查白名单
 	if !c.IsAllowed(userID) && !c.IsAllowed(senderID) {
 		logger.DebugCF("telegram", "Message rejected by allowlist", map[string]interface{}{
 			"user_id":  userID,
@@ -458,7 +481,6 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		"preview":   utils.Truncate(content, 50),
 	})
 
-	// 发送打字状态
 	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
 	if err != nil {
 		logger.ErrorCF("telegram", "Failed to send chat action", map[string]interface{}{
@@ -466,7 +488,6 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		})
 	}
 
-	// 停止之前的思考动画
 	chatIDStr := fmt.Sprintf("%d", chatID)
 	if prevStop, ok := c.stopThinking.Load(chatIDStr); ok {
 		if cf, ok := prevStop.(*thinkingCancel); ok && cf != nil {
@@ -474,12 +495,10 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		}
 	}
 
-	// 创建取消函数用于思考状态
 	_, thinkCancel := context.WithTimeout(ctx, 5*time.Minute)
 	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: thinkCancel})
 
-	// 发送占位消息
-	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "🤔 正在思考..."))
+	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "Thinking..."))
 	if err == nil {
 		c.placeholders.Store(chatIDStr, pMsg.MessageID)
 	}
@@ -492,17 +511,14 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		"is_group":   fmt.Sprintf("%t", message.Chat.Type != "private"),
 	}
 
-	// 使用流式模式（如果配置启用）
 	c.handleMessageWithStream(senderID, fmt.Sprintf("%d", chatID), content, mediaPaths, metadata)
 }
 
-// handleMessageWithStream 处理消息，支持流式模式
 func (c *TelegramChannel) handleMessageWithStream(senderID, chatID, content string, media []string, metadata map[string]string) {
 	if !c.IsAllowed(senderID) {
 		return
 	}
 
-	// 构建会话密钥
 	sessionKey := fmt.Sprintf("%s:%s", c.Name(), chatID)
 
 	msg := bus.InboundMessage{
@@ -513,7 +529,7 @@ func (c *TelegramChannel) handleMessageWithStream(senderID, chatID, content stri
 		Media:      media,
 		SessionKey: sessionKey,
 		Metadata:   metadata,
-		StreamMode: c.config.StreamMode, // 根据配置启用流式模式
+		StreamMode: c.config.StreamMode,
 	}
 
 	c.bus.PublishInbound(msg)
@@ -529,7 +545,6 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		return fmt.Errorf("invalid chat ID: %w", err)
 	}
 
-	// 停止思考动画
 	if stop, ok := c.stopThinking.Load(msg.ChatID); ok {
 		if cf, ok := stop.(*thinkingCancel); ok && cf != nil {
 			cf.Cancel()
@@ -539,7 +554,6 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 
 	htmlContent := markdownToTelegramHTML(msg.Content)
 
-	// 尝试编辑占位消息
 	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
 		c.placeholders.Delete(msg.ChatID)
 		editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), htmlContent)
@@ -548,7 +562,6 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		if _, err = c.bot.EditMessageText(ctx, editMsg); err == nil {
 			return nil
 		}
-		// 编辑失败则发送新消息
 	}
 
 	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
@@ -644,7 +657,7 @@ func markdownToTelegramHTML(text string) string {
 
 	text = regexp.MustCompile(`~~(.+?)~~`).ReplaceAllString(text, "<s>$1</s>")
 
-	text = regexp.MustCompile(`^[-*]\s+`).ReplaceAllString(text, "• ")
+	text = regexp.MustCompile(`^[-*]\s+`).ReplaceAllString(text, "* ")
 
 	for i, code := range inlineCodes.codes {
 		escaped := escapeHTML(code)
@@ -714,8 +727,34 @@ func escapeHTML(text string) string {
 	return text
 }
 
-// finalizeStreamMessage 完成流式消息，发送最终内容
-func (c *TelegramChannel) finalizeStreamMessage(ctx context.Context, chatID int64, state *StreamState) {
+type executionLogStore struct {
+	sync.RWMutex
+	logs map[string]*bus.ExecutionLog
+}
+
+var globalLogStore = &executionLogStore{
+	logs: make(map[string]*bus.ExecutionLog),
+}
+
+func (c *TelegramChannel) saveExecutionLog(sessionKey string, log *bus.ExecutionLog) {
+	globalLogStore.Lock()
+	defer globalLogStore.Unlock()
+	globalLogStore.logs[sessionKey] = log
+}
+
+func (c *TelegramChannel) getExecutionLog(sessionKey string) *bus.ExecutionLog {
+	globalLogStore.RLock()
+	defer globalLogStore.RUnlock()
+	return globalLogStore.logs[sessionKey]
+}
+
+func (c *TelegramChannel) deleteExecutionLog(sessionKey string) {
+	globalLogStore.Lock()
+	defer globalLogStore.Unlock()
+	delete(globalLogStore.logs, sessionKey)
+}
+
+func (c *TelegramChannel) finalizeStreamMessage(ctx context.Context, chatID int64, state *StreamState, sessionKey string) {
 	content := state.GetContent()
 	if content == "" {
 		return
@@ -723,31 +762,172 @@ func (c *TelegramChannel) finalizeStreamMessage(ctx context.Context, chatID int6
 
 	htmlContent := markdownToTelegramHTML(content)
 
-	// 如果已有消息ID，编辑它
+	execLog := state.GetExecutionLog()
+	var keyboard *telego.InlineKeyboardMarkup
+	if execLog != nil && len(execLog.Steps) > 0 {
+		keyboard = tu.InlineKeyboard(
+			tu.InlineKeyboardRow(
+				tu.InlineKeyboardButton("View Details").WithCallbackData(fmt.Sprintf("view_log:%s", sessionKey)),
+			),
+		)
+		c.saveExecutionLog(sessionKey, execLog)
+	}
+
 	if state.messageID != 0 {
 		editMsg := tu.EditMessageText(tu.ID(chatID), state.messageID, htmlContent)
 		editMsg.ParseMode = telego.ModeHTML
+		if keyboard != nil {
+			editMsg.ReplyMarkup = keyboard
+		}
 		if _, err := c.bot.EditMessageText(ctx, editMsg); err != nil {
-			// 编辑失败，删除旧消息并发送新消息
 			c.bot.DeleteMessage(ctx, &telego.DeleteMessageParams{
 				ChatID:    telego.ChatID{ID: chatID},
 				MessageID: state.messageID,
 			})
-			c.sendFinalMessage(ctx, chatID, htmlContent)
+			c.sendFinalMessageWithKeyboard(ctx, chatID, htmlContent, keyboard)
 		}
 	} else {
-		c.sendFinalMessage(ctx, chatID, htmlContent)
+		c.sendFinalMessageWithKeyboard(ctx, chatID, htmlContent, keyboard)
 	}
 }
 
-// sendFinalMessage 发送最终消息
-func (c *TelegramChannel) sendFinalMessage(ctx context.Context, chatID int64, htmlContent string) {
+func (c *TelegramChannel) sendFinalMessageWithKeyboard(ctx context.Context, chatID int64, htmlContent string, keyboard *telego.InlineKeyboardMarkup) {
 	msg := tu.Message(tu.ID(chatID), htmlContent)
 	msg.ParseMode = telego.ModeHTML
+	if keyboard != nil {
+		msg.ReplyMarkup = keyboard
+	}
 
 	if _, err := c.bot.SendMessage(ctx, msg); err != nil {
 		logger.ErrorCF("telegram", "Failed to send final message", map[string]interface{}{
 			"error": err.Error(),
 		})
 	}
+}
+
+func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego.Update) {
+	if update.CallbackQuery == nil {
+		return
+	}
+
+	callback := update.CallbackQuery
+	data := callback.Data
+
+	if strings.HasPrefix(data, "view_log:") {
+		sessionKey := strings.TrimPrefix(data, "view_log:")
+		log := c.getExecutionLog(sessionKey)
+		if log == nil {
+			c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
+				CallbackQueryID: callback.ID,
+				Text:            "Log expired or not found",
+				ShowAlert:       true,
+			})
+			return
+		}
+
+		detailContent := formatExecutionLog(log)
+		htmlContent := markdownToTelegramHTML(detailContent)
+
+		c.bot.EditMessageText(ctx, &telego.EditMessageTextParams{
+			ChatID:    telego.ChatID{ID: callback.Message.GetChat().ID},
+			MessageID: callback.Message.GetMessageID(),
+			Text:      htmlContent,
+			ParseMode: telego.ModeHTML,
+			ReplyMarkup: tu.InlineKeyboard(
+				tu.InlineKeyboardRow(
+					tu.InlineKeyboardButton("Back").WithCallbackData(fmt.Sprintf("back_result:%s", sessionKey)),
+				),
+			),
+		})
+
+		c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
+			CallbackQueryID: callback.ID,
+		})
+	} else if strings.HasPrefix(data, "back_result:") {
+		sessionKey := strings.TrimPrefix(data, "back_result:")
+		log := c.getExecutionLog(sessionKey)
+		if log == nil {
+			c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
+				CallbackQueryID: callback.ID,
+				Text:            "Log expired",
+				ShowAlert:       true,
+			})
+			return
+		}
+
+		var finalContent string
+		for i := len(log.Steps) - 1; i >= 0; i-- {
+			if log.Steps[i].Type == "thinking" && log.Steps[i].Content != "" {
+				finalContent = log.Steps[i].Content
+				break
+			}
+		}
+		if finalContent == "" {
+			finalContent = "Completed"
+		}
+
+		htmlContent := markdownToTelegramHTML(finalContent)
+		c.bot.EditMessageText(ctx, &telego.EditMessageTextParams{
+			ChatID:    telego.ChatID{ID: callback.Message.GetChat().ID},
+			MessageID: callback.Message.GetMessageID(),
+			Text:      htmlContent,
+			ParseMode: telego.ModeHTML,
+			ReplyMarkup: tu.InlineKeyboard(
+				tu.InlineKeyboardRow(
+					tu.InlineKeyboardButton("View Details").WithCallbackData(fmt.Sprintf("view_log:%s", sessionKey)),
+				),
+			),
+		})
+
+		c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
+			CallbackQueryID: callback.ID,
+		})
+	}
+}
+
+func formatExecutionLog(log *bus.ExecutionLog) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("Execution Log\n"))
+	sb.WriteString(fmt.Sprintf("Start: %s\n", log.StartTime.Format("15:04:05")))
+	if !log.EndTime.IsZero() {
+		duration := log.EndTime.Sub(log.StartTime)
+		sb.WriteString(fmt.Sprintf("Duration: %s\n\n", duration.Round(time.Millisecond)))
+	}
+
+	sb.WriteString("---\n")
+	for i, step := range log.Steps {
+		switch step.Type {
+		case "thinking":
+			sb.WriteString(fmt.Sprintf("%d. Thinking (Round %d)\n", i+1, step.Iteration))
+			if step.Content != "" {
+				sb.WriteString(fmt.Sprintf("   %s\n", step.Content))
+			}
+		case "tool_call":
+			sb.WriteString(fmt.Sprintf("%d. Tool Call (Round %d)\n", i+1, step.Iteration))
+			sb.WriteString(fmt.Sprintf("   Tool: %s\n", step.ToolName))
+			if len(step.ToolArgs) > 0 {
+				argsJSON, _ := json.Marshal(step.ToolArgs)
+				if len(argsJSON) > 200 {
+					argsJSON = append(argsJSON[:200], []byte("...")...)
+				}
+				sb.WriteString(fmt.Sprintf("   Args: %s\n", string(argsJSON)))
+			}
+		case "tool_result":
+			sb.WriteString(fmt.Sprintf("%d. Tool Result\n", i+1))
+			if step.ToolName != "" {
+				sb.WriteString(fmt.Sprintf("   Tool: %s\n", step.ToolName))
+			}
+			if step.ToolResult != "" {
+				preview := step.ToolResult
+				if len(preview) > 500 {
+					preview = preview[:500] + "..."
+				}
+				sb.WriteString(fmt.Sprintf("   Result: %s\n", preview))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	return sb.String()
 }

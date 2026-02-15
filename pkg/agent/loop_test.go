@@ -27,6 +27,13 @@ func (m *mockProvider) GetDefaultModel() string {
 	return "mock-model"
 }
 
+func (m *mockProvider) ChatWithStream(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, opts providers.ChatOptions) (*providers.LLMResponse, error) {
+	return &providers.LLMResponse{
+		Content:   "Mock response",
+		ToolCalls: []providers.ToolCall{},
+	}, nil
+}
+
 func TestRecordLastChannel(t *testing.T) {
 	// Create temp workspace
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
@@ -371,6 +378,13 @@ func (m *simpleMockProvider) Chat(ctx context.Context, messages []providers.Mess
 
 func (m *simpleMockProvider) GetDefaultModel() string {
 	return "mock-model"
+}
+
+func (m *simpleMockProvider) ChatWithStream(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, opts providers.ChatOptions) (*providers.LLMResponse, error) {
+	return &providers.LLMResponse{
+		Content:   m.response,
+		ToolCalls: []providers.ToolCall{},
+	}, nil
 }
 
 // mockCustomTool is a simple mock tool for registration testing

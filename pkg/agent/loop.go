@@ -181,8 +181,10 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			}
 
 			if response != "" {
-				// Check if the message tool already sent a response during this round.
-				// If so, skip publishing to avoid duplicate messages to the user.
+				if msg.StreamMode {
+					continue
+				}
+
 				alreadySent := false
 				if tool, ok := al.tools.Get("message"); ok {
 					if mt, ok := tool.(*tools.MessageTool); ok {
@@ -346,7 +348,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 }
 
 // sendStreamEvent 发送流式事件到总线
-func (al *AgentLoop) sendStreamEvent(opts processOptions, eventType bus.StreamEventType, content string, toolName string, args map[string]interface{}, iteration int) {
+func (al *AgentLoop) sendStreamEvent(opts processOptions, eventType bus.StreamEventType, content string, toolName string, args map[string]interface{}, toolResult string, iteration int) {
 	if !opts.StreamMode {
 		return
 	}
@@ -359,7 +361,9 @@ func (al *AgentLoop) sendStreamEvent(opts processOptions, eventType bus.StreamEv
 		Content:    content,
 		ToolName:   toolName,
 		ToolArgs:   args,
+		ToolResult: toolResult,
 		Iteration:  iteration,
+		Timestamp:  time.Now(),
 	})
 }
 
@@ -378,7 +382,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	}
 
 	// 发送开始思考的流式事件
-	al.sendStreamEvent(opts, bus.StreamEventThinking, "🤔 正在分析问题...", "", nil, 0)
+	al.sendStreamEvent(opts, bus.StreamEventThinking, "🤔 正在分析问题...", "", nil, "", 0)
 
 	// 1. Update tool contexts
 	al.updateToolContexts(opts.Channel, opts.ChatID)
@@ -405,7 +409,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	// 4. Run LLM iteration loop
 	finalContent, iteration, err := al.runLLMIteration(ctx, messages, opts)
 	if err != nil {
-		al.sendStreamEvent(opts, bus.StreamEventError, fmt.Sprintf("错误: %v", err), "", nil, iteration)
+		al.sendStreamEvent(opts, bus.StreamEventError, fmt.Sprintf("错误: %v", err), "", nil, "", iteration)
 		return "", err
 	}
 
@@ -422,7 +426,7 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	al.sessions.Save(opts.SessionKey)
 
 	// 发送完成事件
-	al.sendStreamEvent(opts, bus.StreamEventComplete, finalContent, "", nil, iteration)
+	al.sendStreamEvent(opts, bus.StreamEventComplete, finalContent, "", nil, "", iteration)
 
 	// 7. Optional: summarization
 	if opts.EnableSummary {
@@ -502,18 +506,18 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		// 如果启用流式模式，使用 ChatWithStream
 		if opts.StreamMode {
 			// 发送正在生成的流式事件
-			al.sendStreamEvent(opts, bus.StreamEventThinking, fmt.Sprintf("🔄 第 %d 轮思考中...", iteration), "", nil, iteration)
+			al.sendStreamEvent(opts, bus.StreamEventThinking, fmt.Sprintf("🔄 第 %d 轮思考中...", iteration), "", nil, "", iteration)
 
 			chatOpts := providers.ChatOptions{
 				MaxTokens:   8192,
 				Temperature: 0.7,
 				StreamCallback: func(chunk string, done bool) {
 					if !done && chunk != "" {
-						al.sendStreamEvent(opts, bus.StreamEventContent, chunk, "", nil, iteration)
+						al.sendStreamEvent(opts, bus.StreamEventContent, chunk, "", nil, "", iteration)
 					}
 				},
 				ToolCallCallback: func(toolName string, args map[string]interface{}) {
-					al.sendStreamEvent(opts, bus.StreamEventToolCall, fmt.Sprintf("正在调用工具: %s", toolName), toolName, args, iteration)
+					al.sendStreamEvent(opts, bus.StreamEventToolCall, fmt.Sprintf("正在调用工具: %s", toolName), toolName, args, "", iteration)
 				},
 			}
 
@@ -583,7 +587,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			// 发送工具调用流式事件
 			argsJSON, _ := json.Marshal(tc.Arguments)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
-			al.sendStreamEvent(opts, bus.StreamEventToolCall, fmt.Sprintf("🔧 调用工具: %s(%s)", tc.Name, argsPreview), tc.Name, tc.Arguments, iteration)
+			al.sendStreamEvent(opts, bus.StreamEventToolCall, fmt.Sprintf("🔧 调用工具: %s(%s)", tc.Name, argsPreview), tc.Name, tc.Arguments, "", iteration)
 
 			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", tc.Name, argsPreview),
 				map[string]interface{}{
@@ -616,7 +620,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			} else if toolResult.ForLLM != "" {
 				resultPreview = utils.Truncate(toolResult.ForLLM, 100)
 			}
-			al.sendStreamEvent(opts, bus.StreamEventToolResult, fmt.Sprintf("✅ 工具 %s 执行完成: %s", tc.Name, resultPreview), tc.Name, nil, iteration)
+			al.sendStreamEvent(opts, bus.StreamEventToolResult, fmt.Sprintf("✅ 工具 %s 执行完成: %s", tc.Name, resultPreview), tc.Name, nil, resultPreview, iteration)
 
 			// Send ForUser content to user immediately if not Silent
 			if !toolResult.Silent && toolResult.ForUser != "" && opts.SendResponse {

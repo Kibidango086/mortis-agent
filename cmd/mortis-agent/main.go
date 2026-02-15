@@ -49,7 +49,7 @@ var (
 	goVersion string
 )
 
-const logo = "🦞"
+const logo = "🤣"
 
 // formatVersion returns the version string with optional git commit
 func formatVersion() string {

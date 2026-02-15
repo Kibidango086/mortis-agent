@@ -1,6 +1,6 @@
 module github.com/Kibidango086/mortis-agent
 
-go 1.25.7
+go 1.25.6
 
 require (
 	github.com/adhocore/gronx v1.19.6
