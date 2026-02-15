@@ -1,8 +1,8 @@
-// PicoClaw - Ultra-lightweight personal AI agent
+// mortisagent - Ultra-lightweight personal AI agent
 // Inspired by and based on nanobot: https://github.com/HKUDS/nanobot
 // License: MIT
 //
-// Copyright (c) 2026 PicoClaw contributors
+// Copyright (c) 2026 mortisagent contributors
 
 package main
 
@@ -209,7 +209,7 @@ func printHelp() {
 	fmt.Println("  gateway     Start mortis-agent gateway")
 	fmt.Println("  status      Show mortis-agent status")
 	fmt.Println("  cron        Manage scheduled tasks")
-	fmt.Println("  migrate     Migrate from OpenClaw to PicoClaw")
+	fmt.Println("  migrate     Migrate from OpenClaw to mortisagent")
 	fmt.Println("  skills      Manage skills (install, list, remove)")
 	fmt.Println("  version     Show version information")
 }
@@ -237,7 +237,7 @@ func onboard() {
 	workspace := cfg.WorkspacePath()
 	createWorkspaceTemplates(workspace)
 
-	fmt.Printf("%s PicoClaw is ready!\n", logo)
+	fmt.Printf("%s mortisagent is ready!\n", logo)
 	fmt.Println("\n✨ New Features:")
 	fmt.Println("  • Multi-Agent System: 7 specialized agents (general/build/plan/explore/debug/review/doc)")
 	fmt.Println("  • Todo Management: Track tasks with the todo tool")
@@ -339,7 +339,7 @@ func migrateCmd() {
 			}
 		case "--mortis-agent-home":
 			if i+1 < len(args) {
-				opts.PicoClawHome = args[i+1]
+				opts.MortisAgentHome = args[i+1]
 				i++
 			}
 		default:
@@ -361,7 +361,7 @@ func migrateCmd() {
 }
 
 func migrateHelp() {
-	fmt.Println("\nMigrate from OpenClaw to PicoClaw")
+	fmt.Println("\nMigrate from OpenClaw to mortisagent")
 	fmt.Println()
 	fmt.Println("Usage: mortis-agent migrate [options]")
 	fmt.Println()
@@ -372,7 +372,7 @@ func migrateHelp() {
 	fmt.Println("  --workspace-only   Only migrate workspace files, skip config")
 	fmt.Println("  --force            Skip confirmation prompts")
 	fmt.Println("  --openclaw-home    Override OpenClaw home directory (default: ~/.openclaw)")
-	fmt.Println("  --mortis-agent-home    Override PicoClaw home directory (default: ~/.mortis-agent)")
+	fmt.Println("  --mortis-agent-home    Override mortisagent home directory (default: ~/.mortis-agent)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  mortis-agent migrate              Detect and migrate from OpenClaw")

@@ -1,6 +1,6 @@
 services:
   # ─────────────────────────────────────────────
-  # PicoClaw Agent (one-shot query)
+  # mortisagent Agent (one-shot query)
   #   docker compose run --rm mortis-agent-agent -m "Hello"
   # ─────────────────────────────────────────────
   mortis-agent-agent:
@@ -18,7 +18,7 @@ services:
     tty: true
 
   # ─────────────────────────────────────────────
-  # PicoClaw Gateway (Long-running Bot)
+  # mortisagent Gateway (Long-running Bot)
   #   docker compose up mortis-agent-gateway
   # ─────────────────────────────────────────────
   mortis-agent-gateway:

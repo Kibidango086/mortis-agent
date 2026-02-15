@@ -21,7 +21,7 @@ builds:
       - s390x
       - mips64
       - arm
-    main: ./cmd/picoclaw
+    main: ./cmd/mortisagent
     ignore:
       - goos: windows
         goarch: arm

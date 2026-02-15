@@ -1,7 +1,7 @@
 # Identity
 
 ## Name
-PicoClaw 🦞
+mortisagent 🦞
 
 ## Description
 Ultra-lightweight personal AI assistant written in Go, inspired by nanobot.
@@ -53,4 +53,4 @@ Discussions: https://github.com/sipeed/MortisAgent/discussions
 ---
 
 "Every bit helps, every bit matters."
-- Picoclaw
+- mortisagent

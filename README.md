@@ -4,19 +4,13 @@
 > 
 > 本项目为个人学习使用，基于 [picoclaw](https://github.com/sipeed/picoclaw) 进行二次开发。
 > 
-> **项目源头**: [sipeed/picoclaw](https://github.com/sipeed/picoclaw) (MIT License)
 
 个人 AI 助手，支持多 Agent、流式对话和丰富的工具系统。
 
 ## 声明
+- 修改内容：增加流式对话、增强工具等
 
-本项目代码主要来源于 [picoclaw](https://github.com/sipeed/picoclaw)，遵循原项目的 MIT 开源协议：
-
-- 原始项目：[https://github.com/sipeed/picoclaw](https://github.com/sipeed/picoclaw)
-- 原协议：MIT License
-- 修改内容：增加流式对话、多 Agent 系统、增强工具等
-
-本项目仅供个人学习和自用，不进行商业分发。
+本项目仅供个人学习和自用。
 
 ## 特性
 

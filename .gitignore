@@ -8,14 +8,14 @@ build/
 *.dylib
 *.test
 *.out
-/picoclaw
-/picoclaw-test
-cmd/picoclaw/workspace
+/mortisagent
+/mortisagent-test
+cmd/mortisagent/workspace
 
-# Picoclaw specific
+# mortisagent specific
 
-# PicoClaw
-.picoclaw/
+# mortisagent
+.mortisagent/
 config.json
 sessions/
 build/
