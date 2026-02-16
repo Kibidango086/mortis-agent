@@ -36,6 +36,8 @@ type StreamState struct {
 	executionLog *bus.ExecutionLog
 	isStreaming  bool
 	lastUpdate   time.Time
+	// Track all message IDs that were sent during streaming (for cleanup)
+	messageIDs []int
 }
 
 type Part struct {
@@ -288,6 +290,7 @@ type ExecutionContext struct {
 	FinalContent string
 	ChatID       int64
 	MessageID    int
+	CreatedAt    time.Time
 }
 
 var executionLogStore = struct {
@@ -295,6 +298,30 @@ var executionLogStore = struct {
 	logs map[string]*ExecutionContext
 }{
 	logs: make(map[string]*ExecutionContext),
+}
+
+// cleanupExecutionLogs removes logs older than 1 hour
+func cleanupExecutionLogs() {
+	executionLogStore.Lock()
+	defer executionLogStore.Unlock()
+
+	now := time.Now()
+	for key, ctx := range executionLogStore.logs {
+		if now.Sub(ctx.CreatedAt) > time.Hour {
+			delete(executionLogStore.logs, key)
+		}
+	}
+}
+
+func init() {
+	// Start cleanup goroutine
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			cleanupExecutionLogs()
+		}
+	}()
 }
 
 func NewTelegramChannel(cfg config.TelegramConfig, bus *bus.MessageBus) (*TelegramChannel, error) {
@@ -536,6 +563,14 @@ func (c *TelegramChannel) sendNewStreamMessage(ctx context.Context, chatID int64
 	msg := tu.Message(tu.ID(chatID), htmlContent)
 	msg.ParseMode = telego.ModeHTML
 
+	// Delete old message if exists
+	if oldMsgID := state.GetMessageID(); oldMsgID != 0 {
+		c.bot.DeleteMessage(ctx, &telego.DeleteMessageParams{
+			ChatID:    telego.ChatID{ID: chatID},
+			MessageID: oldMsgID,
+		})
+	}
+
 	sentMsg, err := c.bot.SendMessage(ctx, msg)
 	if err != nil {
 		msg.ParseMode = ""
@@ -604,6 +639,7 @@ func (c *TelegramChannel) finalizeStreamMessage(ctx context.Context, chatID int6
 			FinalContent: finalContent,
 			ChatID:       chatID,
 			MessageID:    messageID,
+			CreatedAt:    time.Now(),
 		}
 		executionLogStore.Unlock()
 
@@ -691,10 +727,6 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 				"session_id": msg.SessionID,
 				"has_button": hasToolCalls,
 			})
-			// Clean up
-			executionLogStore.Lock()
-			delete(executionLogStore.logs, msg.SessionID)
-			executionLogStore.Unlock()
 			return nil
 		}
 
@@ -722,13 +754,6 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		if err != nil {
 			return err
 		}
-	}
-
-	// Clean up execution context
-	if exists {
-		executionLogStore.Lock()
-		delete(executionLogStore.logs, msg.SessionID)
-		executionLogStore.Unlock()
 	}
 
 	return nil
@@ -891,7 +916,6 @@ func (c *TelegramChannel) showToolCallsPage(ctx context.Context, callback *teleg
 	}
 
 	content := sb.String()
-	escapedContent := escapeHTMLForTelegram(content)
 
 	var navButtons []telego.InlineKeyboardButton
 	if pageNum > 0 {
@@ -907,8 +931,8 @@ func (c *TelegramChannel) showToolCallsPage(ctx context.Context, callback *teleg
 	c.bot.EditMessageText(ctx, &telego.EditMessageTextParams{
 		ChatID:      telego.ChatID{ID: callback.Message.GetChat().ID},
 		MessageID:   callback.Message.GetMessageID(),
-		Text:        escapedContent,
-		ParseMode:   "",
+		Text:        content,
+		ParseMode:   telego.ModeHTML,
 		ReplyMarkup: keyboard,
 	})
 }
