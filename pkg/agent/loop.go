@@ -347,7 +347,7 @@ func (al *AgentLoop) processSystemMessage(ctx context.Context, msg bus.InboundMe
 	return "", nil
 }
 
-// sendStreamEvent 发送流式事件到总线
+// sendStreamEvent 发送流式事件到总线 (opencode 1:1 模式)
 func (al *AgentLoop) sendStreamEvent(opts processOptions, eventType bus.StreamEventType, content string, toolName string, args map[string]interface{}, toolResult string, iteration int) {
 	if !opts.StreamMode {
 		return
@@ -367,6 +367,208 @@ func (al *AgentLoop) sendStreamEvent(opts processOptions, eventType bus.StreamEv
 	})
 }
 
+// sendStreamEventWithID 发送带 ID 的流式事件 (opencode 模式)
+func (al *AgentLoop) sendStreamEventWithID(opts processOptions, eventType bus.StreamEventType, id string, delta string, partID string) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       eventType,
+		ID:         id,
+		Delta:      delta,
+		PartID:     partID,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendTextStart 发送 text-start 事件 (1:1 from opencode)
+func (al *AgentLoop) sendTextStart(opts processOptions, partID string) {
+	al.sendStreamEventWithID(opts, bus.StreamEventTextStart, "", "", partID)
+}
+
+// sendTextDelta 发送 text-delta 事件 (1:1 from opencode)
+func (al *AgentLoop) sendTextDelta(opts processOptions, partID string, delta string) {
+	al.sendStreamEventWithID(opts, bus.StreamEventTextDelta, "", delta, partID)
+}
+
+// sendTextEnd 发送 text-end 事件 (1:1 from opencode)
+func (al *AgentLoop) sendTextEnd(opts processOptions, partID string) {
+	al.sendStreamEventWithID(opts, bus.StreamEventTextEnd, "", "", partID)
+}
+
+// sendReasoningStart 发送 reasoning-start 事件 (1:1 from opencode)
+func (al *AgentLoop) sendReasoningStart(opts processOptions, id string, partID string) {
+	al.sendStreamEventWithID(opts, bus.StreamEventReasoningStart, id, "", partID)
+}
+
+// sendReasoningDelta 发送 reasoning-delta 事件 (1:1 from opencode)
+func (al *AgentLoop) sendReasoningDelta(opts processOptions, id string, delta string) {
+	al.sendStreamEventWithID(opts, bus.StreamEventReasoningDelta, id, delta, "")
+}
+
+// sendReasoningEnd 发送 reasoning-end 事件 (1:1 from opencode)
+func (al *AgentLoop) sendReasoningEnd(opts processOptions, id string) {
+	al.sendStreamEventWithID(opts, bus.StreamEventReasoningEnd, id, "", "")
+}
+
+// sendToolInputStart 发送 tool-input-start 事件 (1:1 from opencode)
+func (al *AgentLoop) sendToolInputStart(opts processOptions, toolCallID string, toolName string, partID string) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventToolInputStart,
+		ToolCallID: toolCallID,
+		ToolName:   toolName,
+		PartID:     partID,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendToolCall 发送 tool-call 事件 (1:1 from opencode)
+func (al *AgentLoop) sendToolCall(opts processOptions, toolCallID string, toolName string, args map[string]interface{}, iteration int) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventToolCall,
+		ToolCallID: toolCallID,
+		ToolName:   toolName,
+		ToolArgs:   args,
+		Iteration:  iteration,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendToolResult 发送 tool-result 事件 (1:1 from opencode)
+func (al *AgentLoop) sendToolResult(opts processOptions, toolCallID string, toolName string, result string, iteration int) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventToolResult,
+		ToolCallID: toolCallID,
+		ToolName:   toolName,
+		ToolResult: result,
+		Iteration:  iteration,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendToolError 发送 tool-error 事件 (1:1 from opencode)
+func (al *AgentLoop) sendToolError(opts processOptions, toolCallID string, toolName string, err string, iteration int) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventToolError,
+		ToolCallID: toolCallID,
+		ToolName:   toolName,
+		Error:      err,
+		Iteration:  iteration,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendStartStep 发送 start-step 事件 (1:1 from opencode)
+func (al *AgentLoop) sendStartStep(opts processOptions, iteration int) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventStartStep,
+		Iteration:  iteration,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendFinishStep 发送 finish-step 事件 (1:1 from opencode)
+func (al *AgentLoop) sendFinishStep(opts processOptions, iteration int, finishReason string) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:      opts.Channel,
+		ChatID:       opts.ChatID,
+		SessionKey:   opts.SessionKey,
+		Type:         bus.StreamEventFinishStep,
+		Iteration:    iteration,
+		FinishReason: finishReason,
+		Timestamp:    time.Now(),
+	})
+}
+
+// sendStart 发送 start 事件 (1:1 from opencode)
+func (al *AgentLoop) sendStart(opts processOptions) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventStart,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendFinish 发送 finish 事件 (1:1 from opencode)
+func (al *AgentLoop) sendFinish(opts processOptions) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventFinish,
+		Timestamp:  time.Now(),
+	})
+}
+
+// sendError 发送 error 事件 (1:1 from opencode)
+func (al *AgentLoop) sendError(opts processOptions, err string) {
+	if !opts.StreamMode {
+		return
+	}
+
+	al.bus.PublishStream(bus.StreamMessage{
+		Channel:    opts.Channel,
+		ChatID:     opts.ChatID,
+		SessionKey: opts.SessionKey,
+		Type:       bus.StreamEventError,
+		Content:    err,
+		Timestamp:  time.Now(),
+	})
+}
+
 // runAgentLoop is the core message processing logic.
 // It handles context building, LLM calls, tool execution, and response handling.
 func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (string, error) {
@@ -381,8 +583,11 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 		}
 	}
 
-	// 发送开始思考的流式事件
-	al.sendStreamEvent(opts, bus.StreamEventThinking, "🤔 正在分析问题...", "", nil, "", 0)
+	// 发送 start 事件 (1:1 from opencode)
+	al.sendStart(opts)
+
+	// 发送 start-step 事件 (1:1 from opencode)
+	al.sendStartStep(opts, 1)
 
 	// 1. Update tool contexts
 	al.updateToolContexts(opts.Channel, opts.ChatID)
@@ -425,8 +630,8 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	al.sessions.AddMessage(opts.SessionKey, "assistant", finalContent)
 	al.sessions.Save(opts.SessionKey)
 
-	// 发送完成事件
-	al.sendStreamEvent(opts, bus.StreamEventComplete, finalContent, "", nil, "", iteration)
+	// Send finish event (1:1 from opencode)
+	al.sendFinish(opts)
 
 	// 7. Optional: summarization
 	if opts.EnableSummary {
@@ -456,12 +661,19 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 
 // runLLMIteration executes the LLM call loop with tool handling.
 // Returns the final content, iteration count, and any error.
+// 1:1 from opencode's processor.ts stream handling
 func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.Message, opts processOptions) (string, int, error) {
 	iteration := 0
 	var finalContent string
 
+	// Create ID generator for this stream session
+	idGen := NewStreamIDGenerator("part")
+
 	for iteration < al.maxIterations {
 		iteration++
+
+		// Send start-step event (1:1 from opencode)
+		al.sendStartStep(opts, iteration)
 
 		logger.DebugCF("agent", "LLM iteration",
 			map[string]interface{}{
@@ -503,25 +715,53 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 		var response *providers.LLMResponse
 		var err error
 
-		// 如果启用流式模式，使用 ChatWithStream
-		if opts.StreamMode {
-			// 发送正在生成的流式事件
-			al.sendStreamEvent(opts, bus.StreamEventThinking, fmt.Sprintf("🔄 第 %d 轮思考中...", iteration), "", nil, "", iteration)
+		// Track stream state for opencode-style events
+		currentTextPartID := ""
+		toolCallMap := make(map[string]string) // maps tool call ID to part ID
 
+		// 如果启用流式模式，使用 ChatWithStream (opencode style)
+		if opts.StreamMode {
 			chatOpts := providers.ChatOptions{
 				MaxTokens:   8192,
 				Temperature: 0.7,
+				// StreamCallback for text-delta events (1:1 from opencode)
 				StreamCallback: func(chunk string, done bool) {
-					if !done && chunk != "" {
-						al.sendStreamEvent(opts, bus.StreamEventContent, chunk, "", nil, "", iteration)
+					if done {
+						// Send text-end event (1:1 from opencode)
+						if currentTextPartID != "" {
+							al.sendTextEnd(opts, currentTextPartID)
+							currentTextPartID = ""
+						}
+						return
+					}
+
+					if chunk != "" {
+						// Send text-start event if not already started (1:1 from opencode)
+						if currentTextPartID == "" {
+							currentTextPartID = idGen.Next()
+							al.sendTextStart(opts, currentTextPartID)
+						}
+						// Send text-delta event (1:1 from opencode)
+						al.sendTextDelta(opts, currentTextPartID, chunk)
 					}
 				},
+				// ToolCallCallback for tool events (1:1 from opencode)
 				ToolCallCallback: func(toolName string, args map[string]interface{}) {
-					al.sendStreamEvent(opts, bus.StreamEventToolCall, fmt.Sprintf("正在调用工具: %s", toolName), toolName, args, "", iteration)
+					// Tool call notification
+					logger.DebugCF("agent", "Stream tool call initiated",
+						map[string]interface{}{
+							"tool": toolName,
+						})
 				},
 			}
 
 			response, err = al.provider.ChatWithStream(ctx, messages, providerToolDefs, al.model, chatOpts)
+
+			// Ensure text-end is sent if we have an active text part
+			if currentTextPartID != "" {
+				al.sendTextEnd(opts, currentTextPartID)
+				currentTextPartID = ""
+			}
 		} else {
 			response, err = al.provider.Chat(ctx, messages, providerToolDefs, al.model, map[string]interface{}{
 				"max_tokens":  8192,
@@ -535,6 +775,7 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 					"iteration": iteration,
 					"error":     err.Error(),
 				})
+			al.sendError(opts, fmt.Sprintf("LLM call failed: %v", err))
 			return "", iteration, fmt.Errorf("LLM call failed: %w", err)
 		}
 
@@ -546,6 +787,9 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 					"iteration":     iteration,
 					"content_chars": len(finalContent),
 				})
+
+			// Send finish-step event (1:1 from opencode)
+			al.sendFinishStep(opts, iteration, response.FinishReason)
 			break
 		}
 
@@ -584,24 +828,25 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 		// Execute tool calls
 		for _, tc := range response.ToolCalls {
-			// 发送工具调用流式事件
-			argsJSON, _ := json.Marshal(tc.Arguments)
-			argsPreview := utils.Truncate(string(argsJSON), 200)
-			al.sendStreamEvent(opts, bus.StreamEventToolCall, fmt.Sprintf("🔧 调用工具: %s(%s)", tc.Name, argsPreview), tc.Name, tc.Arguments, "", iteration)
+			// Generate part ID for this tool call
+			partID := idGen.Next()
+			toolCallMap[tc.ID] = partID
 
-			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", tc.Name, argsPreview),
+			// Send tool-input-start event (1:1 from opencode)
+			al.sendToolInputStart(opts, tc.ID, tc.Name, partID)
+
+			// Send tool-call event (1:1 from opencode)
+			al.sendToolCall(opts, tc.ID, tc.Name, tc.Arguments, iteration)
+
+			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s", tc.Name),
 				map[string]interface{}{
-					"tool":      tc.Name,
-					"iteration": iteration,
+					"tool":         tc.Name,
+					"tool_call_id": tc.ID,
+					"iteration":    iteration,
 				})
 
 			// Create async callback for tools that implement AsyncTool
-			// NOTE: Following openclaw's design, async tools do NOT send results directly to users.
-			// Instead, they notify the agent via PublishInbound, and the agent decides
-			// whether to forward the result to the user (in processSystemMessage).
 			asyncCallback := func(callbackCtx context.Context, result *tools.ToolResult) {
-				// Log the async completion but don't send directly to user
-				// The agent will handle user notification via processSystemMessage
 				if !result.Silent && result.ForUser != "" {
 					logger.InfoCF("agent", "Async tool completed, agent will handle notification",
 						map[string]interface{}{
@@ -613,14 +858,24 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 
 			toolResult := al.tools.ExecuteWithContext(ctx, tc.Name, tc.Arguments, opts.Channel, opts.ChatID, asyncCallback)
 
-			// 发送工具结果流式事件
-			resultPreview := ""
-			if toolResult.ForUser != "" {
-				resultPreview = utils.Truncate(toolResult.ForUser, 100)
-			} else if toolResult.ForLLM != "" {
-				resultPreview = utils.Truncate(toolResult.ForLLM, 100)
+			// Determine content for LLM based on tool result
+			contentForLLM := toolResult.ForLLM
+			if contentForLLM == "" && toolResult.Err != nil {
+				contentForLLM = toolResult.Err.Error()
 			}
-			al.sendStreamEvent(opts, bus.StreamEventToolResult, fmt.Sprintf("✅ 工具 %s 执行完成: %s", tc.Name, resultPreview), tc.Name, nil, resultPreview, iteration)
+
+			// Send tool-result or tool-error event (1:1 from opencode)
+			if toolResult.Err != nil {
+				al.sendToolError(opts, tc.ID, tc.Name, toolResult.Err.Error(), iteration)
+			} else {
+				resultPreview := ""
+				if toolResult.ForUser != "" {
+					resultPreview = utils.Truncate(toolResult.ForUser, 500)
+				} else if toolResult.ForLLM != "" {
+					resultPreview = utils.Truncate(toolResult.ForLLM, 500)
+				}
+				al.sendToolResult(opts, tc.ID, tc.Name, resultPreview, iteration)
+			}
 
 			// Send ForUser content to user immediately if not Silent
 			if !toolResult.Silent && toolResult.ForUser != "" && opts.SendResponse {
@@ -636,12 +891,6 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 					})
 			}
 
-			// Determine content for LLM based on tool result
-			contentForLLM := toolResult.ForLLM
-			if contentForLLM == "" && toolResult.Err != nil {
-				contentForLLM = toolResult.Err.Error()
-			}
-
 			toolResultMsg := providers.Message{
 				Role:       "tool",
 				Content:    contentForLLM,
@@ -652,6 +901,9 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			// Save tool result message to session
 			al.sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
 		}
+
+		// Send finish-step event (1:1 from opencode)
+		al.sendFinishStep(opts, iteration, response.FinishReason)
 	}
 
 	return finalContent, iteration, nil

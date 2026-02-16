@@ -69,22 +69,7 @@ type AgentDefaults struct {
 }
 
 type ChannelsConfig struct {
-	WhatsApp WhatsAppConfig `json:"whatsapp"`
 	Telegram TelegramConfig `json:"telegram"`
-	Feishu   FeishuConfig   `json:"feishu"`
-	Discord  DiscordConfig  `json:"discord"`
-	MaixCam  MaixCamConfig  `json:"maixcam"`
-	QQ       QQConfig       `json:"qq"`
-	DingTalk DingTalkConfig `json:"dingtalk"`
-	Slack    SlackConfig    `json:"slack"`
-	LINE     LINEConfig     `json:"line"`
-	OneBot   OneBotConfig   `json:"onebot"`
-}
-
-type WhatsAppConfig struct {
-	Enabled   bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_WHATSAPP_ENABLED"`
-	BridgeURL string              `json:"bridge_url" env:"MORTIS_AGENT_CHANNELS_WHATSAPP_BRIDGE_URL"`
-	AllowFrom FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_WHATSAPP_ALLOW_FROM"`
 }
 
 type TelegramConfig struct {
@@ -93,68 +78,6 @@ type TelegramConfig struct {
 	Proxy      string              `json:"proxy" env:"MORTIS_AGENT_CHANNELS_TELEGRAM_PROXY"`
 	AllowFrom  FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_TELEGRAM_ALLOW_FROM"`
 	StreamMode bool                `json:"stream_mode" env:"MORTIS_AGENT_CHANNELS_TELEGRAM_STREAM_MODE"`
-}
-
-type FeishuConfig struct {
-	Enabled           bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_FEISHU_ENABLED"`
-	AppID             string              `json:"app_id" env:"MORTIS_AGENT_CHANNELS_FEISHU_APP_ID"`
-	AppSecret         string              `json:"app_secret" env:"MORTIS_AGENT_CHANNELS_FEISHU_APP_SECRET"`
-	EncryptKey        string              `json:"encrypt_key" env:"MORTIS_AGENT_CHANNELS_FEISHU_ENCRYPT_KEY"`
-	VerificationToken string              `json:"verification_token" env:"MORTIS_AGENT_CHANNELS_FEISHU_VERIFICATION_TOKEN"`
-	AllowFrom         FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_FEISHU_ALLOW_FROM"`
-}
-
-type DiscordConfig struct {
-	Enabled   bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_DISCORD_ENABLED"`
-	Token     string              `json:"token" env:"MORTIS_AGENT_CHANNELS_DISCORD_TOKEN"`
-	AllowFrom FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_DISCORD_ALLOW_FROM"`
-}
-
-type MaixCamConfig struct {
-	Enabled   bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_MAIXCAM_ENABLED"`
-	Host      string              `json:"host" env:"MORTIS_AGENT_CHANNELS_MAIXCAM_HOST"`
-	Port      int                 `json:"port" env:"MORTIS_AGENT_CHANNELS_MAIXCAM_PORT"`
-	AllowFrom FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_MAIXCAM_ALLOW_FROM"`
-}
-
-type QQConfig struct {
-	Enabled   bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_QQ_ENABLED"`
-	AppID     string              `json:"app_id" env:"MORTIS_AGENT_CHANNELS_QQ_APP_ID"`
-	AppSecret string              `json:"app_secret" env:"MORTIS_AGENT_CHANNELS_QQ_APP_SECRET"`
-	AllowFrom FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_QQ_ALLOW_FROM"`
-}
-
-type DingTalkConfig struct {
-	Enabled      bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_DINGTALK_ENABLED"`
-	ClientID     string              `json:"client_id" env:"MORTIS_AGENT_CHANNELS_DINGTALK_CLIENT_ID"`
-	ClientSecret string              `json:"client_secret" env:"MORTIS_AGENT_CHANNELS_DINGTALK_CLIENT_SECRET"`
-	AllowFrom    FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_DINGTALK_ALLOW_FROM"`
-}
-
-type SlackConfig struct {
-	Enabled   bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_SLACK_ENABLED"`
-	BotToken  string              `json:"bot_token" env:"MORTIS_AGENT_CHANNELS_SLACK_BOT_TOKEN"`
-	AppToken  string              `json:"app_token" env:"MORTIS_AGENT_CHANNELS_SLACK_APP_TOKEN"`
-	AllowFrom FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_SLACK_ALLOW_FROM"`
-}
-
-type LINEConfig struct {
-	Enabled            bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_LINE_ENABLED"`
-	ChannelSecret      string              `json:"channel_secret" env:"MORTIS_AGENT_CHANNELS_LINE_CHANNEL_SECRET"`
-	ChannelAccessToken string              `json:"channel_access_token" env:"MORTIS_AGENT_CHANNELS_LINE_CHANNEL_ACCESS_TOKEN"`
-	WebhookHost        string              `json:"webhook_host" env:"MORTIS_AGENT_CHANNELS_LINE_WEBHOOK_HOST"`
-	WebhookPort        int                 `json:"webhook_port" env:"MORTIS_AGENT_CHANNELS_LINE_WEBHOOK_PORT"`
-	WebhookPath        string              `json:"webhook_path" env:"MORTIS_AGENT_CHANNELS_LINE_WEBHOOK_PATH"`
-	AllowFrom          FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_LINE_ALLOW_FROM"`
-}
-
-type OneBotConfig struct {
-	Enabled            bool                `json:"enabled" env:"MORTIS_AGENT_CHANNELS_ONEBOT_ENABLED"`
-	WSUrl              string              `json:"ws_url" env:"MORTIS_AGENT_CHANNELS_ONEBOT_WS_URL"`
-	AccessToken        string              `json:"access_token" env:"MORTIS_AGENT_CHANNELS_ONEBOT_ACCESS_TOKEN"`
-	ReconnectInterval  int                 `json:"reconnect_interval" env:"MORTIS_AGENT_CHANNELS_ONEBOT_RECONNECT_INTERVAL"`
-	GroupTriggerPrefix []string            `json:"group_trigger_prefix" env:"MORTIS_AGENT_CHANNELS_ONEBOT_GROUP_TRIGGER_PREFIX"`
-	AllowFrom          FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_ONEBOT_ALLOW_FROM"`
 }
 
 type HeartbeatConfig struct {
@@ -235,70 +158,11 @@ func DefaultConfig() *Config {
 			},
 		},
 		Channels: ChannelsConfig{
-			WhatsApp: WhatsAppConfig{
-				Enabled:   false,
-				BridgeURL: "ws://localhost:3001",
-				AllowFrom: FlexibleStringSlice{},
-			},
 			Telegram: TelegramConfig{
 				Enabled:    false,
 				Token:      "",
 				AllowFrom:  FlexibleStringSlice{},
 				StreamMode: true, // 默认启用流式模式
-			},
-			Feishu: FeishuConfig{
-				Enabled:           false,
-				AppID:             "",
-				AppSecret:         "",
-				EncryptKey:        "",
-				VerificationToken: "",
-				AllowFrom:         FlexibleStringSlice{},
-			},
-			Discord: DiscordConfig{
-				Enabled:   false,
-				Token:     "",
-				AllowFrom: FlexibleStringSlice{},
-			},
-			MaixCam: MaixCamConfig{
-				Enabled:   false,
-				Host:      "0.0.0.0",
-				Port:      18790,
-				AllowFrom: FlexibleStringSlice{},
-			},
-			QQ: QQConfig{
-				Enabled:   false,
-				AppID:     "",
-				AppSecret: "",
-				AllowFrom: FlexibleStringSlice{},
-			},
-			DingTalk: DingTalkConfig{
-				Enabled:      false,
-				ClientID:     "",
-				ClientSecret: "",
-				AllowFrom:    FlexibleStringSlice{},
-			},
-			Slack: SlackConfig{
-				Enabled:   false,
-				BotToken:  "",
-				AppToken:  "",
-				AllowFrom: FlexibleStringSlice{},
-			},
-			LINE: LINEConfig{
-				Enabled:            false,
-				ChannelSecret:      "",
-				ChannelAccessToken: "",
-				WebhookHost:        "0.0.0.0",
-				WebhookPort:        18791,
-				WebhookPath:        "/webhook/line",
-				AllowFrom:          FlexibleStringSlice{},
-			},
-			OneBot: OneBotConfig{
-				Enabled:            false,
-				WSUrl:              "ws://127.0.0.1:3001",
-				AccessToken:        "",
-				ReconnectInterval:  5,
-				GroupTriggerPrefix: []string{},
-				AllowFrom:          FlexibleStringSlice{},
 			},
 		},
 		Providers: ProvidersConfig{

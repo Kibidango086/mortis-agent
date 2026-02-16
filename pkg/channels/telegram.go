@@ -21,42 +21,129 @@ import (
 	"github.com/Kibidango086/mortis-agent/pkg/voice"
 )
 
+// Part 表示消息的一个部分，1:1 对应 opencode 的 part 概念
+type Part struct {
+	ID         string
+	Type       string // "text", "reasoning", "tool"
+	Text       string
+	ToolName   string
+	ToolCallID string
+	State      map[string]interface{}
+	Time       struct {
+		Start int64
+		End   int64
+	}
+}
+
+// StreamState 管理流式状态，1:1 还原 opencode 的流式处理
 type StreamState struct {
-	messageID      int
-	currentContent string
+	messageID int
+	chatID    int64
+	mu        sync.RWMutex
+
+	// Parts 管理 - 1:1 from opencode
+	parts        map[string]*Part
+	currentText  *Part
+	reasoningMap map[string]*Part
+	toolCalls    map[string]*Part
+
+	// Execution tracking
+	iteration    int
+	executionLog *bus.ExecutionLog
+
+	// Display state
+	displayContent string
 	lastUpdate     time.Time
 	isStreaming    bool
-	stepInfo       string
-	iteration      int
-	toolCalls      []string
-	executionLog   *bus.ExecutionLog
-	mu             sync.RWMutex
 }
 
-func (s *StreamState) UpdateContent(content string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.currentContent = content
-	s.lastUpdate = time.Now()
+func NewStreamState() *StreamState {
+	return &StreamState{
+		parts:        make(map[string]*Part),
+		reasoningMap: make(map[string]*Part),
+		toolCalls:    make(map[string]*Part),
+		lastUpdate:   time.Now(),
+	}
 }
 
-func (s *StreamState) AppendContent(content string) {
+func (s *StreamState) AddPart(part *Part) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.currentContent += content
-	s.lastUpdate = time.Now()
+	s.parts[part.ID] = part
 }
 
-func (s *StreamState) SetStep(step string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.stepInfo = step
+func (s *StreamState) GetPart(id string) *Part {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.parts[id]
 }
 
-func (s *StreamState) AddToolCall(toolName string) {
+func (s *StreamState) UpdatePartDelta(partID string, delta string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.toolCalls = append(s.toolCalls, toolName)
+
+	if part, ok := s.parts[partID]; ok {
+		part.Text += delta
+		s.lastUpdate = time.Now()
+	}
+}
+
+func (s *StreamState) SetCurrentText(part *Part) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentText = part
+}
+
+func (s *StreamState) GetCurrentText() *Part {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentText
+}
+
+func (s *StreamState) AddReasoning(id string, part *Part) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reasoningMap[id] = part
+}
+
+func (s *StreamState) GetReasoning(id string) *Part {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.reasoningMap[id]
+}
+
+func (s *StreamState) UpdateReasoningDelta(id string, delta string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if part, ok := s.reasoningMap[id]; ok {
+		part.Text += delta
+		s.lastUpdate = time.Now()
+	}
+}
+
+func (s *StreamState) RemoveReasoning(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.reasoningMap, id)
+}
+
+func (s *StreamState) AddToolCall(id string, part *Part) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolCalls[id] = part
+}
+
+func (s *StreamState) GetToolCall(id string) *Part {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.toolCalls[id]
+}
+
+func (s *StreamState) RemoveToolCall(id string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.toolCalls, id)
 }
 
 func (s *StreamState) GetDisplayContent() string {
@@ -65,28 +152,98 @@ func (s *StreamState) GetDisplayContent() string {
 
 	var parts []string
 
-	if s.stepInfo != "" {
-		parts = append(parts, fmt.Sprintf("%s", s.stepInfo))
-	}
-
-	if len(s.toolCalls) > 0 {
-		toolsStr := strings.Join(s.toolCalls, " -> ")
-		parts = append(parts, fmt.Sprintf("Tool: %s", toolsStr))
-	}
-
+	// Show iteration info if in multi-step process
 	if s.iteration > 0 {
-		parts = append(parts, fmt.Sprintf("Round %d", s.iteration))
+		parts = append(parts, fmt.Sprintf("🔄 Step %d", s.iteration))
 	}
 
-	if len(parts) > 0 && s.currentContent != "" {
-		parts = append(parts, "\n"+strings.Repeat("-", 20)+"\n")
+	// Show reasoning first (if any)
+	for _, reasoning := range s.reasoningMap {
+		if reasoning.Text != "" {
+			parts = append(parts, fmt.Sprintf("💭 %s", reasoning.Text))
+		}
 	}
 
-	if s.currentContent != "" {
-		parts = append(parts, s.currentContent)
+	// Show active/completed tool calls with details (like opencode)
+	if len(s.toolCalls) > 0 {
+		for _, tool := range s.toolCalls {
+			if tool.ToolName != "" {
+				toolLine := fmt.Sprintf("🔧 %s", tool.ToolName)
+
+				// Add status indicator
+				if status, ok := tool.State["status"].(string); ok {
+					switch status {
+					case "pending":
+						toolLine += " ⏳"
+					case "running":
+						toolLine += " 🔄"
+					case "completed":
+						toolLine += " ✅"
+					case "error":
+						toolLine += " ❌"
+					}
+				}
+
+				// Add input args preview
+				if input, ok := tool.State["input"].(map[string]interface{}); ok && len(input) > 0 {
+					argsPreview := formatArgsPreview(input)
+					if argsPreview != "" {
+						toolLine += fmt.Sprintf("(%s)", argsPreview)
+					}
+				}
+
+				parts = append(parts, toolLine)
+
+				// Show result preview if completed
+				if output, ok := tool.State["output"].(string); ok && output != "" {
+					preview := truncateString(output, 100)
+					parts = append(parts, fmt.Sprintf("   → %s", preview))
+				}
+
+				// Show error if any
+				if err, ok := tool.State["error"].(string); ok && err != "" {
+					parts = append(parts, fmt.Sprintf("   ⚠️ %s", truncateString(err, 100)))
+				}
+			}
+		}
+	}
+
+	// Show main text content
+	if s.currentText != nil && s.currentText.Text != "" {
+		if len(parts) > 0 {
+			parts = append(parts, "")
+		}
+		parts = append(parts, s.currentText.Text)
 	}
 
 	return strings.Join(parts, "\n")
+}
+
+// formatArgsPreview formats tool arguments for display
+func formatArgsPreview(args map[string]interface{}) string {
+	if len(args) == 0 {
+		return ""
+	}
+
+	var previewParts []string
+	for key, value := range args {
+		valueStr := fmt.Sprintf("%v", value)
+		// Truncate long values
+		if len(valueStr) > 30 {
+			valueStr = valueStr[:27] + "..."
+		}
+		previewParts = append(previewParts, fmt.Sprintf("%s=%s", key, valueStr))
+	}
+
+	return strings.Join(previewParts, ", ")
+}
+
+// truncateString truncates a string to max length
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 func (s *StreamState) AddExecutionStep(step bus.ExecutionStep) {
@@ -107,12 +264,6 @@ func (s *StreamState) GetExecutionLog() *bus.ExecutionLog {
 	return s.executionLog
 }
 
-func (s *StreamState) GetContent() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.currentContent
-}
-
 func (s *StreamState) IsActive() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -125,25 +276,39 @@ func (s *StreamState) SetActive(active bool) {
 	s.isStreaming = active
 }
 
+func (s *StreamState) SetMessageID(id int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messageID = id
+}
+
+func (s *StreamState) GetMessageID() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.messageID
+}
+
+func (s *StreamState) SetChatID(id int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.chatID = id
+}
+
+func (s *StreamState) GetChatID() int64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.chatID
+}
+
+// TelegramChannel Telegram 通道实现
 type TelegramChannel struct {
 	*BaseChannel
 	bot          *telego.Bot
 	config       config.TelegramConfig
 	chatIDs      map[string]int64
 	transcriber  *voice.GroqTranscriber
-	placeholders sync.Map
-	stopThinking sync.Map
-	streamStates sync.Map
-}
-
-type thinkingCancel struct {
-	fn context.CancelFunc
-}
-
-func (c *thinkingCancel) Cancel() {
-	if c != nil && c.fn != nil {
-		c.fn()
-	}
+	streamStates sync.Map // chatID -> *StreamState
+	mu           sync.RWMutex
 }
 
 func NewTelegramChannel(cfg config.TelegramConfig, bus *bus.MessageBus) (*TelegramChannel, error) {
@@ -169,14 +334,10 @@ func NewTelegramChannel(cfg config.TelegramConfig, bus *bus.MessageBus) (*Telegr
 	base := NewBaseChannel("telegram", cfg, bus, cfg.AllowFrom)
 
 	return &TelegramChannel{
-		BaseChannel:  base,
-		bot:          bot,
-		config:       cfg,
-		chatIDs:      make(map[string]int64),
-		transcriber:  nil,
-		placeholders: sync.Map{},
-		stopThinking: sync.Map{},
-		streamStates: sync.Map{},
+		BaseChannel: base,
+		bot:         bot,
+		config:      cfg,
+		chatIDs:     make(map[string]int64),
 	}, nil
 }
 
@@ -185,7 +346,7 @@ func (c *TelegramChannel) SetTranscriber(transcriber *voice.GroqTranscriber) {
 }
 
 func (c *TelegramChannel) Start(ctx context.Context) error {
-	logger.InfoC("telegram", "Starting Telegram bot (streaming mode)...")
+	logger.InfoC("telegram", "Starting Telegram bot (opencode full-text mode)...")
 
 	updates, err := c.bot.UpdatesViaLongPolling(ctx, &telego.GetUpdatesParams{
 		Timeout: 30,
@@ -199,8 +360,10 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 		"username": c.bot.Username(),
 	})
 
+	// 启动流式消息处理 goroutine
 	go c.handleStreamMessages(ctx)
 
+	// 处理更新
 	go func() {
 		for {
 			select {
@@ -249,6 +412,7 @@ func (c *TelegramChannel) handleStreamMessages(ctx context.Context) {
 	}
 }
 
+// handleStreamEvent 1:1 还原 opencode 的流式事件处理逻辑
 func (c *TelegramChannel) handleStreamEvent(ctx context.Context, msg bus.StreamMessage) {
 	chatID, err := parseChatID(msg.ChatID)
 	if err != nil {
@@ -258,27 +422,109 @@ func (c *TelegramChannel) handleStreamEvent(ctx context.Context, msg bus.StreamM
 		return
 	}
 
-	stateInterface, _ := c.streamStates.LoadOrStore(msg.ChatID, &StreamState{})
+	stateInterface, _ := c.streamStates.LoadOrStore(msg.ChatID, NewStreamState())
 	state := stateInterface.(*StreamState)
 
+	// 1:1 from opencode processor.ts
 	switch msg.Type {
-	case bus.StreamEventThinking:
-		state.SetStep(msg.Content)
+	// Text events
+	case bus.StreamEventTextStart:
+		part := &Part{
+			ID:   msg.PartID,
+			Type: "text",
+			Text: "",
+			Time: struct{ Start, End int64 }{Start: time.Now().UnixMilli()},
+		}
+		state.AddPart(part)
+		state.SetCurrentText(part)
 		state.SetActive(true)
+
+	case bus.StreamEventTextDelta:
+		state.UpdatePartDelta(msg.PartID, msg.Delta)
+		// Throttle updates to avoid rate limiting
+		if time.Since(state.lastUpdate) > 500*time.Millisecond {
+			c.updateStreamMessage(ctx, chatID, state)
+		}
+
+	case bus.StreamEventTextEnd:
+		if part := state.GetPart(msg.PartID); part != nil {
+			part.Text = strings.TrimRight(part.Text, " \n\t")
+			part.Time.End = time.Now().UnixMilli()
+		}
+		state.SetCurrentText(nil)
+		c.updateStreamMessage(ctx, chatID, state)
+
+	// Reasoning events
+	case bus.StreamEventReasoningStart:
+		part := &Part{
+			ID:   msg.ID,
+			Type: "reasoning",
+			Text: "",
+			Time: struct{ Start, End int64 }{Start: time.Now().UnixMilli()},
+		}
+		state.AddPart(part)
+		state.AddReasoning(msg.ID, part)
+
+	case bus.StreamEventReasoningDelta:
+		state.UpdateReasoningDelta(msg.ID, msg.Delta)
+		if time.Since(state.lastUpdate) > 500*time.Millisecond {
+			c.updateStreamMessage(ctx, chatID, state)
+		}
+
+	case bus.StreamEventReasoningEnd:
+		if part := state.GetReasoning(msg.ID); part != nil {
+			part.Text = strings.TrimRight(part.Text, " \n\t")
+			part.Time.End = time.Now().UnixMilli()
+		}
+		state.RemoveReasoning(msg.ID)
+		c.updateStreamMessage(ctx, chatID, state)
+
+	// Tool events
+	case bus.StreamEventToolInputStart:
+		part := &Part{
+			ID:         msg.PartID,
+			Type:       "tool",
+			ToolName:   msg.ToolName,
+			ToolCallID: msg.ToolCallID,
+			State: map[string]interface{}{
+				"status": "pending",
+				"input":  map[string]interface{}{},
+			},
+		}
+		state.AddPart(part)
+		state.AddToolCall(msg.ToolCallID, part)
 		state.AddExecutionStep(bus.ExecutionStep{
-			Type:      "thinking",
-			Timestamp: msg.Timestamp,
-			Content:   msg.Content,
+			Type:      "tool_call",
+			Timestamp: time.Now(),
+			ToolName:  msg.ToolName,
 			Iteration: msg.Iteration,
 		})
 		c.updateStreamMessage(ctx, chatID, state)
 
+	case bus.StreamEventToolInputDelta:
+		// Tool input deltas are typically JSON fragments
+		if part := state.GetToolCall(msg.ToolCallID); part != nil {
+			if input, ok := part.State["input"].(map[string]interface{}); ok {
+				// Accumulate input
+				_ = input
+			}
+		}
+
+	case bus.StreamEventToolInputEnd:
+		if part := state.GetToolCall(msg.ToolCallID); part != nil {
+			part.State["status"] = "running"
+		}
+
 	case bus.StreamEventToolCall:
-		state.AddToolCall(msg.ToolName)
-		state.iteration = msg.Iteration
+		if part := state.GetToolCall(msg.ToolCallID); part != nil {
+			part.ToolName = msg.ToolName
+			part.State["status"] = "running"
+			part.State["input"] = msg.ToolArgs
+			part.Time.Start = time.Now().UnixMilli()
+		}
 		state.AddExecutionStep(bus.ExecutionStep{
 			Type:      "tool_call",
-			Timestamp: msg.Timestamp,
+			Timestamp: time.Now(),
 			ToolName:  msg.ToolName,
 			ToolArgs:  msg.ToolArgs,
 			Iteration: msg.Iteration,
@@ -286,35 +532,93 @@ func (c *TelegramChannel) handleStreamEvent(ctx context.Context, msg bus.StreamM
 		c.updateStreamMessage(ctx, chatID, state)
 
 	case bus.StreamEventToolResult:
-		state.SetStep("")
+		if part := state.GetToolCall(msg.ToolCallID); part != nil {
+			part.State["status"] = "completed"
+			part.State["output"] = msg.ToolResult
+			part.Time.End = time.Now().UnixMilli()
+			// Don't remove from toolCalls - keep for display
+			// state.RemoveToolCall(msg.ToolCallID)
+		}
 		state.AddExecutionStep(bus.ExecutionStep{
 			Type:       "tool_result",
-			Timestamp:  msg.Timestamp,
+			Timestamp:  time.Now(),
 			ToolName:   msg.ToolName,
 			ToolResult: msg.ToolResult,
 			Iteration:  msg.Iteration,
 		})
+		c.updateStreamMessage(ctx, chatID, state)
 
-	case bus.StreamEventContent:
-		state.AppendContent(msg.Content)
+	case bus.StreamEventToolError:
+		if part := state.GetToolCall(msg.ToolCallID); part != nil {
+			part.State["status"] = "error"
+			part.State["error"] = msg.Error
+			part.Time.End = time.Now().UnixMilli()
+			// Don't remove from toolCalls - keep for display
+			// state.RemoveToolCall(msg.ToolCallID)
+		}
+		c.updateStreamMessage(ctx, chatID, state)
+
+	// Step events
+	case bus.StreamEventStartStep:
 		state.iteration = msg.Iteration
-		if time.Since(state.lastUpdate) > 500*time.Millisecond {
-			c.updateStreamMessage(ctx, chatID, state)
-		}
+		state.AddExecutionStep(bus.ExecutionStep{
+			Type:      "step_start",
+			Timestamp: time.Now(),
+			Iteration: msg.Iteration,
+		})
 
-	case bus.StreamEventComplete:
-		state.UpdateContent(msg.Content)
+	case bus.StreamEventFinishStep:
+		state.AddExecutionStep(bus.ExecutionStep{
+			Type:       "step_finish",
+			Timestamp:  time.Now(),
+			Iteration:  msg.Iteration,
+			ToolResult: msg.FinishReason,
+		})
+
+	// Lifecycle events
+	case bus.StreamEventStart:
+		state.SetActive(true)
+
+	case bus.StreamEventFinish:
 		state.SetActive(false)
-		state.SetStep("")
-		if state.executionLog != nil {
-			state.executionLog.EndTime = time.Now()
-		}
 		c.finalizeStreamMessage(ctx, chatID, state, msg.SessionKey)
 		c.streamStates.Delete(msg.ChatID)
 
 	case bus.StreamEventError:
-		state.UpdateContent(fmt.Sprintf("Error: %s", msg.Content))
 		state.SetActive(false)
+		c.sendErrorMessage(ctx, chatID, msg.Content)
+		c.streamStates.Delete(msg.ChatID)
+
+	// Legacy events (向后兼容)
+	case bus.StreamEventThinking:
+		state.AddExecutionStep(bus.ExecutionStep{
+			Type:      "thinking",
+			Timestamp: time.Now(),
+			Content:   msg.Content,
+			Iteration: msg.Iteration,
+		})
+		c.updateStreamMessage(ctx, chatID, state)
+
+	case bus.StreamEventContent:
+		// Legacy content event - treat as text-delta
+		if state.currentText != nil {
+			state.UpdatePartDelta(state.currentText.ID, msg.Content)
+			if time.Since(state.lastUpdate) > 500*time.Millisecond {
+				c.updateStreamMessage(ctx, chatID, state)
+			}
+		}
+
+	case bus.StreamEventComplete:
+		state.SetActive(false)
+		if msg.Content != "" {
+			part := &Part{
+				ID:   "legacy-final",
+				Type: "text",
+				Text: msg.Content,
+			}
+			state.AddPart(part)
+			state.SetCurrentText(part)
+		}
 		c.finalizeStreamMessage(ctx, chatID, state, msg.SessionKey)
 		c.streamStates.Delete(msg.ChatID)
 	}
@@ -328,8 +632,9 @@ func (c *TelegramChannel) updateStreamMessage(ctx context.Context, chatID int64,
 
 	htmlContent := markdownToTelegramHTML(content)
 
-	if state.messageID != 0 {
-		editMsg := tu.EditMessageText(tu.ID(chatID), state.messageID, htmlContent)
+	messageID := state.GetMessageID()
+	if messageID != 0 {
+		editMsg := tu.EditMessageText(tu.ID(chatID), messageID, htmlContent)
 		editMsg.ParseMode = telego.ModeHTML
 		if _, err := c.bot.EditMessageText(ctx, editMsg); err != nil {
 			c.sendNewStreamMessage(ctx, chatID, state, htmlContent)
@@ -358,7 +663,19 @@ func (c *TelegramChannel) sendNewStreamMessage(ctx context.Context, chatID int64
 		}
 	}
 
-	state.messageID = sentMsg.MessageID
+	state.SetMessageID(sentMsg.MessageID)
+	state.SetChatID(chatID)
+}
+
+func (c *TelegramChannel) sendErrorMessage(ctx context.Context, chatID int64, errorMsg string) {
+	htmlContent := markdownToTelegramHTML(fmt.Sprintf("❌ Error: %s", errorMsg))
+	msg := tu.Message(tu.ID(chatID), htmlContent)
+	msg.ParseMode = telego.ModeHTML
+
+	if _, err := c.bot.SendMessage(ctx, msg); err != nil {
+		msg.ParseMode = ""
+		c.bot.SendMessage(ctx, msg)
+	}
 }
 
 func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Update) {
@@ -387,7 +704,9 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 	}
 
 	chatID := message.Chat.ID
+	c.mu.Lock()
 	c.chatIDs[senderID] = chatID
+	c.mu.Unlock()
 
 	content := ""
 	mediaPaths := []string{}
@@ -411,7 +730,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 			if content != "" {
 				content += "\n"
 			}
-			content += fmt.Sprintf("[image: photo]")
+			content += "[image: photo]"
 		}
 	}
 
@@ -431,7 +750,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 						"error": err.Error(),
 						"path":  voicePath,
 					})
-					transcribedText = fmt.Sprintf("[voice (transcription failed)]")
+					transcribedText = "[voice (transcription failed)]"
 				} else {
 					transcribedText = fmt.Sprintf("[voice transcription: %s]", result.Text)
 					logger.InfoCF("telegram", "Voice transcribed successfully", map[string]interface{}{
@@ -439,7 +758,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 					})
 				}
 			} else {
-				transcribedText = fmt.Sprintf("[voice]")
+				transcribedText = "[voice]"
 			}
 
 			if content != "" {
@@ -456,7 +775,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 			if content != "" {
 				content += "\n"
 			}
-			content += fmt.Sprintf("[audio]")
+			content += "[audio]"
 		}
 	}
 
@@ -467,7 +786,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 			if content != "" {
 				content += "\n"
 			}
-			content += fmt.Sprintf("[file]")
+			content += "[file]"
 		}
 	}
 
@@ -481,26 +800,16 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, update telego.Updat
 		"preview":   utils.Truncate(content, 50),
 	})
 
-	err := c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
-	if err != nil {
-		logger.ErrorCF("telegram", "Failed to send chat action", map[string]interface{}{
-			"error": err.Error(),
-		})
-	}
+	// Send typing action
+	c.bot.SendChatAction(ctx, tu.ChatAction(tu.ID(chatID), telego.ChatActionTyping))
 
-	chatIDStr := fmt.Sprintf("%d", chatID)
-	if prevStop, ok := c.stopThinking.Load(chatIDStr); ok {
-		if cf, ok := prevStop.(*thinkingCancel); ok && cf != nil {
-			cf.Cancel()
-		}
-	}
-
-	_, thinkCancel := context.WithTimeout(ctx, 5*time.Minute)
-	c.stopThinking.Store(chatIDStr, &thinkingCancel{fn: thinkCancel})
-
-	pMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "Thinking..."))
+	// Send initial placeholder with opencode-style status
+	placeholderMsg, err := c.bot.SendMessage(ctx, tu.Message(tu.ID(chatID), "⏳ 正在处理..."))
 	if err == nil {
-		c.placeholders.Store(chatIDStr, pMsg.MessageID)
+		stateInterface, _ := c.streamStates.LoadOrStore(fmt.Sprintf("%d", chatID), NewStreamState())
+		state := stateInterface.(*StreamState)
+		state.SetMessageID(placeholderMsg.MessageID)
+		state.SetChatID(chatID)
 	}
 
 	metadata := map[string]string{
@@ -545,24 +854,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		return fmt.Errorf("invalid chat ID: %w", err)
 	}
 
-	if stop, ok := c.stopThinking.Load(msg.ChatID); ok {
-		if cf, ok := stop.(*thinkingCancel); ok && cf != nil {
-			cf.Cancel()
-		}
-		c.stopThinking.Delete(msg.ChatID)
-	}
-
 	htmlContent := markdownToTelegramHTML(msg.Content)
-
-	if pID, ok := c.placeholders.Load(msg.ChatID); ok {
-		c.placeholders.Delete(msg.ChatID)
-		editMsg := tu.EditMessageText(tu.ID(chatID), pID.(int), htmlContent)
-		editMsg.ParseMode = telego.ModeHTML
-
-		if _, err = c.bot.EditMessageText(ctx, editMsg); err == nil {
-			return nil
-		}
-	}
 
 	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
 	tgMsg.ParseMode = telego.ModeHTML
@@ -727,22 +1019,36 @@ func escapeHTML(text string) string {
 	return text
 }
 
+// ExecutionContext 存储完整的执行上下文，包括日志和最终回复
+type ExecutionContext struct {
+	Log          *bus.ExecutionLog
+	FinalContent string
+	ChatID       int64
+	MessageID    int
+}
+
+// Execution log storage
 type executionLogStore struct {
 	sync.RWMutex
-	logs map[string]*bus.ExecutionLog
+	logs map[string]*ExecutionContext
 }
 
 var globalLogStore = &executionLogStore{
-	logs: make(map[string]*bus.ExecutionLog),
+	logs: make(map[string]*ExecutionContext),
 }
 
-func (c *TelegramChannel) saveExecutionLog(sessionKey string, log *bus.ExecutionLog) {
+func (c *TelegramChannel) saveExecutionLog(sessionKey string, log *bus.ExecutionLog, finalContent string, chatID int64, messageID int) {
 	globalLogStore.Lock()
 	defer globalLogStore.Unlock()
-	globalLogStore.logs[sessionKey] = log
+	globalLogStore.logs[sessionKey] = &ExecutionContext{
+		Log:          log,
+		FinalContent: finalContent,
+		ChatID:       chatID,
+		MessageID:    messageID,
+	}
 }
 
-func (c *TelegramChannel) getExecutionLog(sessionKey string) *bus.ExecutionLog {
+func (c *TelegramChannel) getExecutionContext(sessionKey string) *ExecutionContext {
 	globalLogStore.RLock()
 	defer globalLogStore.RUnlock()
 	return globalLogStore.logs[sessionKey]
@@ -755,7 +1061,7 @@ func (c *TelegramChannel) deleteExecutionLog(sessionKey string) {
 }
 
 func (c *TelegramChannel) finalizeStreamMessage(ctx context.Context, chatID int64, state *StreamState, sessionKey string) {
-	content := state.GetContent()
+	content := state.GetDisplayContent()
 	if content == "" {
 		return
 	}
@@ -764,45 +1070,68 @@ func (c *TelegramChannel) finalizeStreamMessage(ctx context.Context, chatID int6
 
 	execLog := state.GetExecutionLog()
 	var keyboard *telego.InlineKeyboardMarkup
+
+	// Set EndTime for the execution log
+	if execLog != nil {
+		execLog.EndTime = time.Now()
+	}
+
 	if execLog != nil && len(execLog.Steps) > 0 {
 		keyboard = tu.InlineKeyboard(
 			tu.InlineKeyboardRow(
-				tu.InlineKeyboardButton("View Details").WithCallbackData(fmt.Sprintf("view_log:%s", sessionKey)),
+				tu.InlineKeyboardButton("📋 View Details").WithCallbackData(fmt.Sprintf("view_log:%s", sessionKey)),
 			),
 		)
-		c.saveExecutionLog(sessionKey, execLog)
 	}
 
-	if state.messageID != 0 {
-		editMsg := tu.EditMessageText(tu.ID(chatID), state.messageID, htmlContent)
+	messageID := state.GetMessageID()
+	finalMessageID := messageID
+
+	if messageID != 0 {
+		editMsg := tu.EditMessageText(tu.ID(chatID), messageID, htmlContent)
 		editMsg.ParseMode = telego.ModeHTML
 		if keyboard != nil {
 			editMsg.ReplyMarkup = keyboard
 		}
 		if _, err := c.bot.EditMessageText(ctx, editMsg); err != nil {
+			// Delete old message and send new one
 			c.bot.DeleteMessage(ctx, &telego.DeleteMessageParams{
 				ChatID:    telego.ChatID{ID: chatID},
-				MessageID: state.messageID,
+				MessageID: messageID,
 			})
-			c.sendFinalMessageWithKeyboard(ctx, chatID, htmlContent, keyboard)
+			sentMsg := c.sendFinalMessageWithKeyboard(ctx, chatID, htmlContent, keyboard)
+			if sentMsg != nil {
+				finalMessageID = sentMsg.MessageID
+			}
 		}
 	} else {
-		c.sendFinalMessageWithKeyboard(ctx, chatID, htmlContent, keyboard)
+		sentMsg := c.sendFinalMessageWithKeyboard(ctx, chatID, htmlContent, keyboard)
+		if sentMsg != nil {
+			finalMessageID = sentMsg.MessageID
+		}
+	}
+
+	// Save execution context after finalizing message
+	if execLog != nil && len(execLog.Steps) > 0 {
+		c.saveExecutionLog(sessionKey, execLog, content, chatID, finalMessageID)
 	}
 }
 
-func (c *TelegramChannel) sendFinalMessageWithKeyboard(ctx context.Context, chatID int64, htmlContent string, keyboard *telego.InlineKeyboardMarkup) {
+func (c *TelegramChannel) sendFinalMessageWithKeyboard(ctx context.Context, chatID int64, htmlContent string, keyboard *telego.InlineKeyboardMarkup) *telego.Message {
 	msg := tu.Message(tu.ID(chatID), htmlContent)
 	msg.ParseMode = telego.ModeHTML
 	if keyboard != nil {
 		msg.ReplyMarkup = keyboard
 	}
 
-	if _, err := c.bot.SendMessage(ctx, msg); err != nil {
+	sentMsg, err := c.bot.SendMessage(ctx, msg)
+	if err != nil {
 		logger.ErrorCF("telegram", "Failed to send final message", map[string]interface{}{
 			"error": err.Error(),
 		})
+		return nil
 	}
+	return sentMsg
 }
 
 func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego.Update) {
@@ -815,8 +1144,8 @@ func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego
 
 	if strings.HasPrefix(data, "view_log:") {
 		sessionKey := strings.TrimPrefix(data, "view_log:")
-		log := c.getExecutionLog(sessionKey)
-		if log == nil {
+		execCtx := c.getExecutionContext(sessionKey)
+		if execCtx == nil || execCtx.Log == nil {
 			c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
 				CallbackQueryID: callback.ID,
 				Text:            "Log expired or not found",
@@ -825,28 +1154,37 @@ func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego
 			return
 		}
 
-		detailContent := formatExecutionLog(log)
-		htmlContent := markdownToTelegramHTML(detailContent)
+		detailContent := formatExecutionLog(execCtx.Log)
+		// Use plain text mode (no HTML parsing) to preserve formatting
+		// Escape HTML characters to prevent parsing errors
+		escapedContent := escapeHTMLForTelegram(detailContent)
 
-		c.bot.EditMessageText(ctx, &telego.EditMessageTextParams{
+		_, err := c.bot.EditMessageText(ctx, &telego.EditMessageTextParams{
 			ChatID:    telego.ChatID{ID: callback.Message.GetChat().ID},
 			MessageID: callback.Message.GetMessageID(),
-			Text:      htmlContent,
-			ParseMode: telego.ModeHTML,
+			Text:      escapedContent,
+			ParseMode: "", // Plain text mode to preserve newlines
 			ReplyMarkup: tu.InlineKeyboard(
 				tu.InlineKeyboardRow(
-					tu.InlineKeyboardButton("Back").WithCallbackData(fmt.Sprintf("back_result:%s", sessionKey)),
+					tu.InlineKeyboardButton("◀️ Back").WithCallbackData(fmt.Sprintf("back_result:%s", sessionKey)),
 				),
 			),
 		})
+
+		if err != nil {
+			logger.ErrorCF("telegram", "Failed to edit message for view_log", map[string]interface{}{
+				"error":       err.Error(),
+				"session_key": sessionKey,
+			})
+		}
 
 		c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
 			CallbackQueryID: callback.ID,
 		})
 	} else if strings.HasPrefix(data, "back_result:") {
 		sessionKey := strings.TrimPrefix(data, "back_result:")
-		log := c.getExecutionLog(sessionKey)
-		if log == nil {
+		execCtx := c.getExecutionContext(sessionKey)
+		if execCtx == nil {
 			c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
 				CallbackQueryID: callback.ID,
 				Text:            "Log expired",
@@ -855,29 +1193,31 @@ func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego
 			return
 		}
 
-		var finalContent string
-		for i := len(log.Steps) - 1; i >= 0; i-- {
-			if log.Steps[i].Type == "thinking" && log.Steps[i].Content != "" {
-				finalContent = log.Steps[i].Content
-				break
-			}
-		}
+		// Use the stored final content instead of trying to extract from steps
+		finalContent := execCtx.FinalContent
 		if finalContent == "" {
-			finalContent = "Completed"
+			finalContent = "✅ Completed"
 		}
 
 		htmlContent := markdownToTelegramHTML(finalContent)
-		c.bot.EditMessageText(ctx, &telego.EditMessageTextParams{
+		_, err := c.bot.EditMessageText(ctx, &telego.EditMessageTextParams{
 			ChatID:    telego.ChatID{ID: callback.Message.GetChat().ID},
 			MessageID: callback.Message.GetMessageID(),
 			Text:      htmlContent,
 			ParseMode: telego.ModeHTML,
 			ReplyMarkup: tu.InlineKeyboard(
 				tu.InlineKeyboardRow(
-					tu.InlineKeyboardButton("View Details").WithCallbackData(fmt.Sprintf("view_log:%s", sessionKey)),
+					tu.InlineKeyboardButton("📋 View Details").WithCallbackData(fmt.Sprintf("view_log:%s", sessionKey)),
 				),
 			),
 		})
+
+		if err != nil {
+			logger.ErrorCF("telegram", "Failed to edit message for back_result", map[string]interface{}{
+				"error":       err.Error(),
+				"session_key": sessionKey,
+			})
+		}
 
 		c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
 			CallbackQueryID: callback.ID,
@@ -885,45 +1225,65 @@ func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego
 	}
 }
 
+// escapeHTMLForTelegram escapes HTML characters for Telegram plain text mode
+func escapeHTMLForTelegram(text string) string {
+	text = strings.ReplaceAll(text, "&", "&amp;")
+	text = strings.ReplaceAll(text, "<", "&lt;")
+	text = strings.ReplaceAll(text, ">", "&gt;")
+	return text
+}
+
+// formatExecutionLog formats execution log for Telegram display
+// Uses plain text mode (not HTML) to preserve formatting
 func formatExecutionLog(log *bus.ExecutionLog) string {
 	var sb strings.Builder
 
-	sb.WriteString(fmt.Sprintf("Execution Log\n"))
-	sb.WriteString(fmt.Sprintf("Start: %s\n", log.StartTime.Format("15:04:05")))
+	sb.WriteString("📋 Execution Log\n")
+	sb.WriteString(fmt.Sprintf("🕐 Start: %s\n", log.StartTime.Format("15:04:05")))
 	if !log.EndTime.IsZero() {
 		duration := log.EndTime.Sub(log.StartTime)
-		sb.WriteString(fmt.Sprintf("Duration: %s\n\n", duration.Round(time.Millisecond)))
+		sb.WriteString(fmt.Sprintf("⏱️ Duration: %s\n", duration.Round(time.Millisecond)))
 	}
+	sb.WriteString("\n")
 
-	sb.WriteString("---\n")
+	sb.WriteString("─" + strings.Repeat("─", 30) + "\n\n")
+
 	for i, step := range log.Steps {
 		switch step.Type {
 		case "thinking":
-			sb.WriteString(fmt.Sprintf("%d. Thinking (Round %d)\n", i+1, step.Iteration))
+			sb.WriteString(fmt.Sprintf("%d. 💭 Thinking (Step %d)\n", i+1, step.Iteration))
 			if step.Content != "" {
 				sb.WriteString(fmt.Sprintf("   %s\n", step.Content))
 			}
 		case "tool_call":
-			sb.WriteString(fmt.Sprintf("%d. Tool Call (Round %d)\n", i+1, step.Iteration))
+			sb.WriteString(fmt.Sprintf("%d. 🔧 Tool Call (Step %d)\n", i+1, step.Iteration))
 			sb.WriteString(fmt.Sprintf("   Tool: %s\n", step.ToolName))
 			if len(step.ToolArgs) > 0 {
 				argsJSON, _ := json.Marshal(step.ToolArgs)
-				if len(argsJSON) > 200 {
-					argsJSON = append(argsJSON[:200], []byte("...")...)
+				argsStr := string(argsJSON)
+				if len(argsStr) > 300 {
+					argsStr = argsStr[:297] + "..."
 				}
-				sb.WriteString(fmt.Sprintf("   Args: %s\n", string(argsJSON)))
+				sb.WriteString(fmt.Sprintf("   Args: %s\n", argsStr))
 			}
 		case "tool_result":
-			sb.WriteString(fmt.Sprintf("%d. Tool Result\n", i+1))
+			sb.WriteString(fmt.Sprintf("%d. ✅ Tool Result\n", i+1))
 			if step.ToolName != "" {
 				sb.WriteString(fmt.Sprintf("   Tool: %s\n", step.ToolName))
 			}
 			if step.ToolResult != "" {
 				preview := step.ToolResult
-				if len(preview) > 500 {
-					preview = preview[:500] + "..."
+				if len(preview) > 800 {
+					preview = preview[:797] + "..."
 				}
 				sb.WriteString(fmt.Sprintf("   Result: %s\n", preview))
+			}
+		case "step_start":
+			sb.WriteString(fmt.Sprintf("%d. ▶️ Step %d Started\n", i+1, step.Iteration))
+		case "step_finish":
+			sb.WriteString(fmt.Sprintf("%d. ⏹️ Step Finished\n", i+1))
+			if step.ToolResult != "" {
+				sb.WriteString(fmt.Sprintf("   Reason: %s\n", step.ToolResult))
 			}
 		}
 		sb.WriteString("\n")
