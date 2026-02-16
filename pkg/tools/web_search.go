@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -173,6 +174,109 @@ func stripTags(content string) string {
 	return re.ReplaceAllString(content, "")
 }
 
+// OllamaSearchProvider uses Ollama's web search API
+type OllamaSearchProvider struct {
+	apiKey     string
+	maxResults int
+}
+
+// NewOllamaSearchProvider creates a new Ollama search provider
+func NewOllamaSearchProvider(apiKey string, maxResults int) *OllamaSearchProvider {
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+	return &OllamaSearchProvider{
+		apiKey:     apiKey,
+		maxResults: maxResults,
+	}
+}
+
+// OllamaWebSearchRequest Ollama web search 请求结构
+type OllamaWebSearchRequest struct {
+	Query      string `json:"query"`
+	MaxResults int    `json:"max_results,omitempty"`
+}
+
+// OllamaWebSearchResult Ollama web search 结果结构
+type OllamaWebSearchResult struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Content string `json:"content"`
+}
+
+// OllamaWebSearchResponse Ollama web search 响应结构
+type OllamaWebSearchResponse struct {
+	Results []OllamaWebSearchResult `json:"results"`
+}
+
+func (p *OllamaSearchProvider) Search(ctx context.Context, query string, opts SearchOptions) (string, error) {
+	if p.apiKey == "" {
+		return "", fmt.Errorf("Ollama API key is not configured")
+	}
+
+	numResults := p.maxResults
+	if opts.NumResults > 0 && opts.NumResults < numResults {
+		numResults = opts.NumResults
+	}
+
+	// Build request
+	reqBody := OllamaWebSearchRequest{
+		Query:      query,
+		MaxResults: numResults,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://ollama.com/api/web_search", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("search request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Ollama search error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var searchResp OllamaWebSearchResponse
+	if err := json.Unmarshal(body, &searchResp); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(searchResp.Results) == 0 {
+		return fmt.Sprintf("No results found for: %s", query), nil
+	}
+
+	// Format results
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Results for: %s (via Ollama)", query))
+	for i, item := range searchResp.Results {
+		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, item.Title, item.URL))
+		if item.Content != "" {
+			lines = append(lines, fmt.Sprintf("   %s", item.Content))
+		}
+	}
+
+	return strings.Join(lines, "\n"), nil
+}
+
 // WebSearchTool performs web searches
 type WebSearchTool struct {
 	provider    SearchProvider
@@ -188,6 +292,9 @@ type WebSearchToolOptions struct {
 	BraveMaxResults      int
 	DuckDuckGoEnabled    bool
 	DuckDuckGoMaxResults int
+	OllamaAPIKey         string
+	OllamaEnabled        bool
+	OllamaMaxResults     int
 }
 
 // NewWebSearchTool creates a new web search tool
@@ -199,8 +306,13 @@ func NewWebSearchTool(opts WebSearchToolOptions) *WebSearchTool {
 		Type:       "auto",
 	}
 
-	// Priority: Exa > Brave > DuckDuckGo
-	if opts.ExaEnabled && opts.ExaAPIKey != "" {
+	// Priority: Ollama > Exa > Brave > DuckDuckGo
+	if opts.OllamaEnabled && opts.OllamaAPIKey != "" {
+		provider = NewOllamaSearchProvider(opts.OllamaAPIKey, opts.OllamaMaxResults)
+		if opts.OllamaMaxResults > 0 {
+			searchOpts.NumResults = opts.OllamaMaxResults
+		}
+	} else if opts.ExaEnabled && opts.ExaAPIKey != "" {
 		provider = NewExaSearchProvider(opts.ExaAPIKey)
 	} else if opts.BraveEnabled && opts.BraveAPIKey != "" {
 		provider = &BraveSearchProvider{apiKey: opts.BraveAPIKey}

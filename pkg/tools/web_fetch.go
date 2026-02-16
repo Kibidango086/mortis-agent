@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -22,19 +23,120 @@ const (
 	defaultMaxChars   = 50000
 )
 
+// FetchProviderType defines the type of web fetch provider
+type FetchProviderType string
+
+const (
+	FetchProviderDirect FetchProviderType = "direct"
+	FetchProviderOllama FetchProviderType = "ollama"
+)
+
+// OllamaWebFetchProvider uses Ollama's web fetch API
+type OllamaWebFetchProvider struct {
+	apiKey string
+}
+
+// NewOllamaWebFetchProvider creates a new Ollama web fetch provider
+func NewOllamaWebFetchProvider(apiKey string) *OllamaWebFetchProvider {
+	return &OllamaWebFetchProvider{apiKey: apiKey}
+}
+
+// OllamaWebFetchRequest Ollama web fetch 请求结构
+type OllamaWebFetchRequest struct {
+	URL string `json:"url"`
+}
+
+// OllamaWebFetchResponse Ollama web fetch 响应结构
+type OllamaWebFetchResponse struct {
+	Title   string   `json:"title"`
+	Content string   `json:"content"`
+	Links   []string `json:"links"`
+}
+
+func (p *OllamaWebFetchProvider) Fetch(ctx context.Context, fetchURL string, maxChars int) (string, string, error) {
+	if p.apiKey == "" {
+		return "", "", fmt.Errorf("Ollama API key is not configured")
+	}
+
+	// Build request
+	reqBody := OllamaWebFetchRequest{
+		URL: fetchURL,
+	}
+
+	jsonBody, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://ollama.com/api/web_fetch", bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return "", "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+p.apiKey)
+
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", fmt.Errorf("fetch request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", "", fmt.Errorf("Ollama fetch error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	var fetchResp OllamaWebFetchResponse
+	if err := json.Unmarshal(body, &fetchResp); err != nil {
+		return "", "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	content := fetchResp.Content
+	if len(content) > maxChars {
+		content = content[:maxChars]
+	}
+
+	return fetchResp.Title, content, nil
+}
+
 // WebFetchTool fetches web content in various formats
 type WebFetchTool struct {
 	defaultMaxChars int
+	providerType    FetchProviderType
+	ollamaProvider  *OllamaWebFetchProvider
+}
+
+// WebFetchToolOptions contains configuration for web fetch
+type WebFetchToolOptions struct {
+	MaxChars       int
+	OllamaAPIKey   string
+	OllamaEnabled  bool
 }
 
 // NewWebFetchTool creates a new web fetch tool
-func NewWebFetchTool(maxChars int) *WebFetchTool {
-	if maxChars <= 0 {
-		maxChars = defaultMaxChars
+func NewWebFetchTool(opts WebFetchToolOptions) *WebFetchTool {
+	if opts.MaxChars <= 0 {
+		opts.MaxChars = defaultMaxChars
 	}
-	return &WebFetchTool{
-		defaultMaxChars: maxChars,
+
+	tool := &WebFetchTool{
+		defaultMaxChars: opts.MaxChars,
+		providerType:    FetchProviderDirect,
 	}
+
+	if opts.OllamaEnabled && opts.OllamaAPIKey != "" {
+		tool.providerType = FetchProviderOllama
+		tool.ollamaProvider = NewOllamaWebFetchProvider(opts.OllamaAPIKey)
+	}
+
+	return tool
 }
 
 func (t *WebFetchTool) Name() string {
@@ -102,6 +204,48 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 		return ErrorResult("missing domain in URL")
 	}
 
+	// Get max chars
+	maxChars := t.defaultMaxChars
+	if mc, ok := args["maxChars"].(float64); ok && mc > 0 {
+		maxChars = int(mc)
+	}
+
+	// Use Ollama provider if enabled
+	if t.providerType == FetchProviderOllama && t.ollamaProvider != nil {
+		return t.executeWithOllama(ctx, urlStr, maxChars)
+	}
+
+	// Otherwise use direct fetch
+	return t.executeDirect(ctx, args, maxChars)
+}
+
+// executeWithOllama fetches content using Ollama's web fetch API
+func (t *WebFetchTool) executeWithOllama(ctx context.Context, urlStr string, maxChars int) *ToolResult {
+	title, content, err := t.ollamaProvider.Fetch(ctx, urlStr, maxChars)
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("Ollama fetch failed: %v", err))
+	}
+
+	result := map[string]interface{}{
+		"url":     urlStr,
+		"title":   title,
+		"source":  "ollama",
+		"length":  len(content),
+		"content": content,
+	}
+
+	resultJSON, _ := json.MarshalIndent(result, "", "  ")
+
+	return &ToolResult{
+		ForLLM:  fmt.Sprintf("Fetched %d bytes from %s via Ollama", len(content), urlStr),
+		ForUser: string(resultJSON),
+	}
+}
+
+// executeDirect fetches content directly using HTTP
+func (t *WebFetchTool) executeDirect(ctx context.Context, args map[string]interface{}, maxChars int) *ToolResult {
+	urlStr := args["url"].(string)
+
 	// Get format
 	format := "markdown"
 	if f, ok := args["format"].(string); ok && f != "" {
@@ -116,12 +260,6 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]interface{})
 			reqTimeout = maxTimeout
 		}
 		timeout = reqTimeout
-	}
-
-	// Get max chars
-	maxChars := t.defaultMaxChars
-	if mc, ok := args["maxChars"].(float64); ok && mc > 0 {
-		maxChars = int(mc)
 	}
 
 	// Build Accept header based on requested format

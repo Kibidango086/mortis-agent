@@ -55,6 +55,8 @@ func (t *SpawnTool) SetContext(channel, chatID string) {
 	t.originChatID = chatID
 }
 
+// Execute runs the spawn tool synchronously - it spawns a subagent and waits for completion.
+// This ensures the main agent waits for the subagent to finish before continuing.
 func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) *ToolResult {
 	task, ok := args["task"].(string)
 	if !ok {
@@ -67,12 +69,30 @@ func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) *T
 		return ErrorResult("Subagent manager not configured")
 	}
 
-	// Pass callback to manager for async completion notification
-	result, err := t.manager.Spawn(ctx, task, label, t.originChannel, t.originChatID, t.callback)
+	// Use a channel to wait for completion synchronously
+	done := make(chan *ToolResult, 1)
+
+	// Callback to receive subagent result
+	callback := func(callbackCtx context.Context, result *ToolResult) {
+		select {
+		case done <- result:
+		default:
+		}
+	}
+
+	// Spawn the subagent (runs in background)
+	_, err := t.manager.Spawn(ctx, task, label, t.originChannel, t.originChatID, callback)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to spawn subagent: %v", err))
 	}
 
-	// Return AsyncResult since the task runs in background
-	return AsyncResult(result)
+	// Wait for subagent to complete (synchronous wait)
+	// Use a select to allow context cancellation
+	select {
+	case result := <-done:
+		// Subagent completed, return its result
+		return result
+	case <-ctx.Done():
+		return ErrorResult("spawn cancelled: context expired").WithError(ctx.Err())
+	}
 }

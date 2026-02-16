@@ -134,9 +134,16 @@ type WebToolsConfig struct {
 	DuckDuckGo DuckDuckGoConfig `json:"duckduckgo"`
 }
 
+type OllamaConfig struct {
+	Enabled  bool   `json:"enabled" env:"MORTIS_AGENT_TOOLS_OLLAMA_ENABLED"`
+	APIKey   string `json:"api_key" env:"MORTIS_AGENT_TOOLS_OLLAMA_API_KEY"`
+	MaxResults int  `json:"max_results" env:"MORTIS_AGENT_TOOLS_OLLAMA_MAX_RESULTS"`
+}
+
 type ToolsConfig struct {
-	Web WebToolsConfig `json:"web"`
-	Exa ExaConfig      `json:"exa"`
+	Web   WebToolsConfig   `json:"web"`
+	Exa   ExaConfig        `json:"exa"`
+	Ollama OllamaConfig    `json:"ollama"`
 }
 
 type ExaConfig struct {
@@ -196,6 +203,11 @@ func DefaultConfig() *Config {
 			Exa: ExaConfig{
 				Enabled: false,
 				APIKey:  "",
+			},
+			Ollama: OllamaConfig{
+				Enabled:   false,
+				APIKey:    "",
+				MaxResults: 5,
 			},
 		},
 		Heartbeat: HeartbeatConfig{

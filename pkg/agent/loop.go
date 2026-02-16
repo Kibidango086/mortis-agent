@@ -81,10 +81,17 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 		BraveEnabled:         cfg.Tools.Web.Brave.Enabled,
 		DuckDuckGoMaxResults: cfg.Tools.Web.DuckDuckGo.MaxResults,
 		DuckDuckGoEnabled:    cfg.Tools.Web.DuckDuckGo.Enabled,
+		OllamaAPIKey:         cfg.Tools.Ollama.APIKey,
+		OllamaEnabled:        cfg.Tools.Ollama.Enabled,
+		OllamaMaxResults:     cfg.Tools.Ollama.MaxResults,
 	}); searchTool != nil {
 		registry.Register(searchTool)
 	}
-	registry.Register(tools.NewWebFetchTool(50000))
+	registry.Register(tools.NewWebFetchTool(tools.WebFetchToolOptions{
+		MaxChars:      50000,
+		OllamaAPIKey:  cfg.Tools.Ollama.APIKey,
+		OllamaEnabled: cfg.Tools.Ollama.Enabled,
+	}))
 
 	// Hardware tools (I2C, SPI) - Linux only, returns error on other platforms
 	registry.Register(tools.NewI2CTool())
