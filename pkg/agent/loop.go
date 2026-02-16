@@ -97,11 +97,7 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 	// Todo management tool
 	registry.Register(tools.NewTodoTool())
 
-	// Question tool - allow AI to ask user
-	questionTool := tools.NewQuestionTool(msgBus)
-	registry.Register(questionTool)
-
-	// Message tool - available to both agent and subagent
+	// Message tool
 	// Subagent uses it to communicate directly with user
 	messageTool := tools.NewMessageTool()
 	messageTool.SetSendCallback(func(channel, chatID, content string) error {
