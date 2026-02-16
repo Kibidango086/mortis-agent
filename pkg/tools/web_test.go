@@ -110,7 +110,7 @@ func TestWebTool_WebFetch_UnsupportedScheme(t *testing.T) {
 	}
 
 	// Should mention only http/https allowed
-	if !strings.Contains(result.ForLLM, "http/https") && !strings.Contains(result.ForUser, "http/https") {
+	if !strings.Contains(result.ForLLM, "http://") && !strings.Contains(result.ForUser, "http://") {
 		t.Errorf("Expected scheme error message, got ForLLM: %s", result.ForLLM)
 	}
 }

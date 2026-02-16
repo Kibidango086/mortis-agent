@@ -20,10 +20,19 @@ type InboundMessage struct {
 
 // OutboundMessage 表示从系统发出的消息
 type OutboundMessage struct {
-	Channel   string `json:"channel"`
-	ChatID    string `json:"chat_id"`
-	Content   string `json:"content"`
-	SessionID string `json:"session_id,omitempty"`
+	Channel   string   `json:"channel"`
+	ChatID    string   `json:"chat_id"`
+	Content   string   `json:"content"`
+	Media     []string `json:"media,omitempty"` // 文件/图片路径列表
+	SessionID string   `json:"session_id,omitempty"`
+}
+
+// MediaRecord 记录发送的媒体文件信息
+type MediaRecord struct {
+	FilePath string `json:"file_path"`
+	FileName string `json:"file_name"`
+	MimeType string `json:"mime_type"`
+	Size     int64  `json:"size"`
 }
 
 // MessageHandler 处理特定通道的消息

@@ -20,7 +20,7 @@ Ultra-lightweight personal AI assistant written in Go, inspired by nanobot.
 - Web search and content fetching
 - File system operations (read, write, edit)
 - Shell command execution
-- Multi-channel messaging (Telegram, WhatsApp, Feishu)
+- Multi-channel messaging (Telegram)
 - Skill-based extensibility
 - Memory and context management
 
@@ -44,11 +44,11 @@ Ultra-lightweight personal AI assistant written in Go, inspired by nanobot.
 MIT License - Free and open source
 
 ## Repository
-https://github.com/sipeed/MortisAgent
+https://github.com/Kibidango086/mortis-agent
 
 ## Contact
-Issues: https://github.com/sipeed/MortisAgent/issues
-Discussions: https://github.com/sipeed/MortisAgent/discussions
+Issues: https://github.com/Kibidango086/mortis-agent/issues
+Discussions: https://github.com/Kibidango086/mortis-agent/discussions
 
 ---
 

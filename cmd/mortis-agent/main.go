@@ -1223,7 +1223,7 @@ func skillsHelp() {
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  mortis-agent skills list")
-	fmt.Println("  mortis-agent skills install sipeed/mortis-agent-skills/weather")
+	fmt.Println("  mortis-agent skills install sipeed/picoclaw-skills/weather")
 	fmt.Println("  mortis-agent skills install-builtin")
 	fmt.Println("  mortis-agent skills list-builtin")
 	fmt.Println("  mortis-agent skills remove weather")
@@ -1250,7 +1250,7 @@ func skillsListCmd(loader *skills.SkillsLoader) {
 func skillsInstallCmd(installer *skills.SkillInstaller) {
 	if len(os.Args) < 4 {
 		fmt.Println("Usage: mortis-agent skills install <github-repo>")
-		fmt.Println("Example: mortis-agent skills install sipeed/mortis-agent-skills/weather")
+		fmt.Println("Example: mortis-agent skills install sipeed/picoclaw-skills/weather")
 		return
 	}
 

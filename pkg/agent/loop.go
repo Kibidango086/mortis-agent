@@ -74,6 +74,8 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 	registry.Register(tools.NewExecTool(workspace, restrict))
 
 	if searchTool := tools.NewWebSearchTool(tools.WebSearchToolOptions{
+		ExaAPIKey:            cfg.Tools.Exa.APIKey,
+		ExaEnabled:           cfg.Tools.Exa.Enabled,
 		BraveAPIKey:          cfg.Tools.Web.Brave.APIKey,
 		BraveMaxResults:      cfg.Tools.Web.Brave.MaxResults,
 		BraveEnabled:         cfg.Tools.Web.Brave.Enabled,
@@ -254,7 +256,7 @@ func (al *AgentLoop) ProcessHeartbeat(ctx context.Context, content, channel, cha
 		EnableSummary:   false,
 		SendResponse:    false,
 		NoHistory:       true, // Don't load session history for heartbeat
-		StreamMode:      false,
+		StreamMode:      true, // Always use streaming mode
 	})
 }
 
@@ -281,7 +283,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return al.processSystemMessage(ctx, msg)
 	}
 
-	// Process as user message
+	// Process as user message - always use streaming mode
 	return al.runAgentLoop(ctx, processOptions{
 		SessionKey:      msg.SessionKey,
 		Channel:         msg.Channel,
@@ -291,7 +293,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		DefaultResponse: "I've completed processing but have no response to give.",
 		EnableSummary:   true,
 		SendResponse:    false,
-		StreamMode:      msg.StreamMode,
+		StreamMode:      true, // Always use streaming mode
 	})
 }
 
@@ -638,12 +640,15 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 		al.maybeSummarize(opts.SessionKey)
 	}
 
-	// 8. Optional: send response via bus
-	if opts.SendResponse {
+	// 8. Send final response via bus (only in non-stream mode)
+	// Skip heartbeat messages - don't send to user
+	// In stream mode, response is already sent via stream events
+	if opts.SessionKey != "heartbeat" && !opts.StreamMode {
 		al.bus.PublishOutbound(bus.OutboundMessage{
-			Channel: opts.Channel,
-			ChatID:  opts.ChatID,
-			Content: finalContent,
+			Channel:   opts.Channel,
+			ChatID:    opts.ChatID,
+			Content:   finalContent,
+			SessionID: opts.SessionKey, // Pass session key for View Details button
 		})
 	}
 
@@ -868,13 +873,14 @@ func (al *AgentLoop) runLLMIteration(ctx context.Context, messages []providers.M
 			if toolResult.Err != nil {
 				al.sendToolError(opts, tc.ID, tc.Name, toolResult.Err.Error(), iteration)
 			} else {
-				resultPreview := ""
+				// Send full result without truncation
+				fullResult := ""
 				if toolResult.ForUser != "" {
-					resultPreview = utils.Truncate(toolResult.ForUser, 500)
+					fullResult = toolResult.ForUser
 				} else if toolResult.ForLLM != "" {
-					resultPreview = utils.Truncate(toolResult.ForLLM, 500)
+					fullResult = toolResult.ForLLM
 				}
-				al.sendToolResult(opts, tc.ID, tc.Name, resultPreview, iteration)
+				al.sendToolResult(opts, tc.ID, tc.Name, fullResult, iteration)
 			}
 
 			// Send ForUser content to user immediately if not Silent

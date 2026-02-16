@@ -283,37 +283,45 @@ Add your heartbeat tasks below this line:
 }
 
 // sendResponse sends the heartbeat response to the last channel
+// NOTE: Currently disabled - heartbeat results should not be sent to users
 func (hs *HeartbeatService) sendResponse(response string) {
-	hs.mu.RLock()
-	msgBus := hs.bus
-	hs.mu.RUnlock()
+	// Heartbeat results are intentionally NOT sent to users
+	// They are only logged to the heartbeat.log file
+	hs.logInfo("Heartbeat completed - result not sent to user (logged only)")
 
-	if msgBus == nil {
-		hs.logInfo("No message bus configured, heartbeat result not sent")
-		return
-	}
+	// The following code is disabled to prevent heartbeat spam:
+	/*
+		hs.mu.RLock()
+		msgBus := hs.bus
+		hs.mu.RUnlock()
 
-	// Get last channel from state
-	lastChannel := hs.state.GetLastChannel()
-	if lastChannel == "" {
-		hs.logInfo("No last channel recorded, heartbeat result not sent")
-		return
-	}
+		if msgBus == nil {
+			hs.logInfo("No message bus configured, heartbeat result not sent")
+			return
+		}
 
-	platform, userID := hs.parseLastChannel(lastChannel)
+		// Get last channel from state
+		lastChannel := hs.state.GetLastChannel()
+		if lastChannel == "" {
+			hs.logInfo("No last channel recorded, heartbeat result not sent")
+			return
+		}
 
-	// Skip internal channels that can't receive messages
-	if platform == "" || userID == "" {
-		return
-	}
+		platform, userID := hs.parseLastChannel(lastChannel)
 
-	msgBus.PublishOutbound(bus.OutboundMessage{
-		Channel: platform,
-		ChatID:  userID,
-		Content: response,
-	})
+		// Skip internal channels that can't receive messages
+		if platform == "" || userID == "" {
+			return
+		}
 
-	hs.logInfo("Heartbeat result sent to %s", platform)
+		msgBus.PublishOutbound(bus.OutboundMessage{
+			Channel: platform,
+			ChatID:  userID,
+			Content: response,
+		})
+
+		hs.logInfo("Heartbeat result sent to %s", platform)
+	*/
 }
 
 // parseLastChannel parses the last channel string into platform and userID.
