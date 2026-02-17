@@ -788,8 +788,8 @@ func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego
 		c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
 			CallbackQueryID: callback.ID,
 		})
-	} else if strings.HasPrefix(data, "tools_page:") {
-		parts := strings.Split(data, ":")
+	} else if strings.HasPrefix(data, "tools_page|") {
+		parts := strings.Split(data, "|")
 		if len(parts) < 3 {
 			return
 		}
@@ -809,8 +809,8 @@ func (c *TelegramChannel) handleCallbackQuery(ctx context.Context, update telego
 		c.bot.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{
 			CallbackQueryID: callback.ID,
 		})
-	} else if strings.HasPrefix(data, "back_result:") {
-		sessionKey := strings.TrimPrefix(data, "back_result:")
+	} else if strings.HasPrefix(data, "back_result|") {
+		sessionKey := strings.TrimPrefix(data, "back_result|")
 
 		executionLogStore.RLock()
 		execCtx, exists := executionLogStore.logs[sessionKey]
@@ -919,11 +919,11 @@ func (c *TelegramChannel) showToolCallsPage(ctx context.Context, callback *teleg
 
 	var navButtons []telego.InlineKeyboardButton
 	if pageNum > 0 {
-		navButtons = append(navButtons, tu.InlineKeyboardButton("⬅️ Prev").WithCallbackData(fmt.Sprintf("tools_page:%s:%d", sessionKey, pageNum-1)))
+		navButtons = append(navButtons, tu.InlineKeyboardButton("⬅️ Prev").WithCallbackData(fmt.Sprintf("tools_page|%s|%d", sessionKey, pageNum-1)))
 	}
-	navButtons = append(navButtons, tu.InlineKeyboardButton("◀️ Back").WithCallbackData(fmt.Sprintf("back_result:%s", sessionKey)))
+	navButtons = append(navButtons, tu.InlineKeyboardButton("◀️ Back").WithCallbackData(fmt.Sprintf("back_result|%s", sessionKey)))
 	if pageNum < totalPages-1 {
-		navButtons = append(navButtons, tu.InlineKeyboardButton("Next ➡️").WithCallbackData(fmt.Sprintf("tools_page:%s:%d", sessionKey, pageNum+1)))
+		navButtons = append(navButtons, tu.InlineKeyboardButton("Next ➡️").WithCallbackData(fmt.Sprintf("tools_page|%s|%d", sessionKey, pageNum+1)))
 	}
 
 	keyboard := tu.InlineKeyboard(tu.InlineKeyboardRow(navButtons...))
