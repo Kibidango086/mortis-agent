@@ -205,6 +205,46 @@ func (sm *SubagentManager) ListTasks() []*SubagentTask {
 	return tasks
 }
 
+// RunSubagentSync runs a single subagent synchronously and returns the result.
+// This is used by SpawnTool to run multiple subagents in parallel.
+func (sm *SubagentManager) RunSubagentSync(ctx context.Context, task, label, originChannel, originChatID string) string {
+	systemPrompt := `You are a subagent. Complete the given task independently and report the result.
+You have access to tools - use them as needed to complete your task.
+After completing the task, provide a clear summary of what was done.`
+
+	messages := []providers.Message{
+		{
+			Role:    "system",
+			Content: systemPrompt,
+		},
+		{
+			Role:    "user",
+			Content: task,
+		},
+	}
+
+	sm.mu.RLock()
+	tools := sm.tools
+	maxIter := sm.maxIterations
+	sm.mu.RUnlock()
+
+	loopResult, err := RunToolLoop(ctx, ToolLoopConfig{
+		Provider: sm.provider,
+		Model:    sm.defaultModel,
+		Tools:    tools,
+		MaxIterations: maxIter,
+		LLMOptions: map[string]any{
+			"max_tokens":  4096,
+			"temperature": 0.7,
+		},
+	}, messages, originChannel, originChatID)
+
+	if err != nil {
+		return fmt.Sprintf("Error: %v", err)
+	}
+	return loopResult.Content
+}
+
 // SubagentTool executes a subagent task synchronously and returns the result.
 // Unlike SpawnTool which runs tasks asynchronously, SubagentTool waits for completion
 // and returns the result directly in the ToolResult.

@@ -3,13 +3,13 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 type SpawnTool struct {
 	manager       *SubagentManager
 	originChannel string
 	originChatID  string
-	callback      AsyncCallback // For async completion notification
 }
 
 func NewSpawnTool(manager *SubagentManager) *SpawnTool {
@@ -20,33 +20,43 @@ func NewSpawnTool(manager *SubagentManager) *SpawnTool {
 	}
 }
 
-// SetCallback implements AsyncTool interface for async completion notification
-func (t *SpawnTool) SetCallback(cb AsyncCallback) {
-	t.callback = cb
-}
-
 func (t *SpawnTool) Name() string {
 	return "spawn"
 }
 
 func (t *SpawnTool) Description() string {
-	return "Spawn a subagent to handle a task in the background. Use this for complex or time-consuming tasks that can run independently. The subagent will complete the task and report back when done."
+	return `Spawn multiple subagents in parallel to handle independent tasks. 
+Each subagent runs concurrently and results are returned after all complete.
+- Use "tasks" array to spawn multiple subagents at once
+- Each task needs a unique "label" for identification
+- All subagents run in parallel and wait for all to finish before returning
+- Perfect for: parallel searches, multiple file operations, dividing complex tasks`
 }
 
 func (t *SpawnTool) Parameters() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"task": map[string]interface{}{
-				"type":        "string",
-				"description": "The task for subagent to complete",
-			},
-			"label": map[string]interface{}{
-				"type":        "string",
-				"description": "Optional short label for the task (for display)",
+			"tasks": map[string]interface{}{
+				"type": "array",
+				"description": "Array of tasks to spawn. Each task will run in parallel.",
+				"items": map[string]interface{}{
+					"type": "object",
+					"properties": map[string]interface{}{
+						"task": map[string]interface{}{
+							"type":        "string",
+							"description": "The task for subagent to complete",
+						},
+						"label": map[string]interface{}{
+							"type":        "string",
+							"description": "Unique label to identify this task result",
+						},
+					},
+					"required": []string{"task", "label"},
+				},
 			},
 		},
-		"required": []string{"task"},
+		"required": []string{"tasks"},
 	}
 }
 
@@ -55,44 +65,117 @@ func (t *SpawnTool) SetContext(channel, chatID string) {
 	t.originChatID = chatID
 }
 
-// Execute runs the spawn tool synchronously - it spawns a subagent and waits for completion.
-// This ensures the main agent waits for the subagent to finish before continuing.
+// TaskSpec defines a single task for spawn
+type TaskSpec struct {
+	Task  string `json:"task"`
+	Label string `json:"label"`
+}
+
+// Execute spawns multiple subagents in parallel and waits for all to complete.
+// Returns results for all tasks in a structured format.
 func (t *SpawnTool) Execute(ctx context.Context, args map[string]interface{}) *ToolResult {
-	task, ok := args["task"].(string)
+	// Extract tasks array
+	tasksIface, ok := args["tasks"]
 	if !ok {
-		return ErrorResult("task is required")
+		// Backward compatibility: also check for single "task" field
+		task, hasTask := args["task"].(string)
+		label, _ := args["label"].(string)
+		if hasTask {
+			tasksIface = []interface{}{
+				map[string]interface{}{"task": task, "label": label},
+			}
+		} else {
+			return ErrorResult("tasks array is required")
+		}
 	}
 
-	label, _ := args["label"].(string)
+	tasksArr, ok := tasksIface.([]interface{})
+	if !ok || len(tasksArr) == 0 {
+		return ErrorResult("tasks must be a non-empty array")
+	}
 
 	if t.manager == nil {
 		return ErrorResult("Subagent manager not configured")
 	}
 
-	// Use a channel to wait for completion synchronously
-	done := make(chan *ToolResult, 1)
+	// Parse tasks
+	tasks := make([]TaskSpec, 0, len(tasksArr))
+	for i, t := range tasksArr {
+		taskMap, ok := t.(map[string]interface{})
+		if !ok {
+			return ErrorResult(fmt.Sprintf("tasks[%d] must be an object", i))
+		}
+		taskStr, _ := taskMap["task"].(string)
+		labelStr, _ := taskMap["label"].(string)
+		if taskStr == "" {
+			return ErrorResult(fmt.Sprintf("tasks[%d].task is required", i))
+		}
+		if labelStr == "" {
+			labelStr = fmt.Sprintf("task-%d", i)
+		}
+		tasks = append(tasks, TaskSpec{Task: taskStr, Label: labelStr})
+	}
 
-	// Callback to receive subagent result
-	callback := func(callbackCtx context.Context, result *ToolResult) {
-		select {
-		case done <- result:
-		default:
+	// Spawn all subagents in parallel and collect results
+	results := make([]struct {
+		Label    string
+		Result   string
+		IsError  bool
+		Error    string
+	}, len(tasks))
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+
+	// Use a cancellable context for all subagents
+	subCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	for i, taskSpec := range tasks {
+		wg.Add(1)
+		go func(index int, task, label string) {
+			defer wg.Done()
+
+			result := t.manager.RunSubagentSync(subCtx, task, label, t.originChannel, t.originChatID)
+
+			mu.Lock()
+			results[index] = struct {
+				Label    string
+				Result   string
+				IsError  bool
+				Error    string
+			}{
+				Label:   label,
+				Result:  result,
+				IsError: result == "",
+			}
+			mu.Unlock()
+		}(i, taskSpec.Task, taskSpec.Label)
+	}
+
+	// Wait for all subagents to complete
+	wg.Wait()
+
+	// Build result summary
+	summary := fmt.Sprintf("Spawned %d subagent(s) in parallel:\n\n", len(tasks))
+	for _, r := range results {
+		if r.IsError {
+			summary += fmt.Sprintf("❌ %s: %s\n", r.Label, r.Error)
+		} else {
+			// Truncate long results for summary
+			resultPreview := r.Result
+			if len(resultPreview) > 200 {
+				resultPreview = resultPreview[:200] + "..."
+			}
+			summary += fmt.Sprintf("✅ %s: %s\n", r.Label, resultPreview)
 		}
 	}
 
-	// Spawn the subagent (runs in background)
-	_, err := t.manager.Spawn(ctx, task, label, t.originChannel, t.originChatID, callback)
-	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to spawn subagent: %v", err))
-	}
-
-	// Wait for subagent to complete (synchronous wait)
-	// Use a select to allow context cancellation
-	select {
-	case result := <-done:
-		// Subagent completed, return its result
-		return result
-	case <-ctx.Done():
-		return ErrorResult("spawn cancelled: context expired").WithError(ctx.Err())
+	return &ToolResult{
+		ForLLM:  summary,
+		ForUser: summary,
+		Silent:  false,
+		IsError: false,
+		Async:   false,
 	}
 }

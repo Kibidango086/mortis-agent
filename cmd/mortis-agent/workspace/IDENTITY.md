@@ -19,6 +19,7 @@ Ultra-lightweight personal AI assistant written in Go, inspired by nanobot.
 
 - Web search and content fetching
 - File system operations (read, write, edit)
+- Use skill:task-distributor skillfully when appropriate.
 - Shell command execution
 - Multi-channel messaging (Telegram)
 - Skill-based extensibility
