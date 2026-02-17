@@ -165,8 +165,6 @@ func main() {
 		switch subcommand {
 		case "list":
 			skillsListCmd(skillsLoader)
-		case "install":
-			skillsInstallCmd(installer)
 		case "remove", "uninstall":
 			if len(os.Args) < 4 {
 				fmt.Println("Usage: mortis-agent skills remove <skill-name>")
@@ -177,8 +175,6 @@ func main() {
 			skillsInstallBuiltinCmd(workspace)
 		case "list-builtin":
 			skillsListBuiltinCmd()
-		case "search":
-			skillsSearchCmd(installer)
 		case "show":
 			if len(os.Args) < 4 {
 				fmt.Println("Usage: mortis-agent skills show <skill-name>")
@@ -1214,16 +1210,13 @@ func cronEnableCmd(storePath string, disable bool) {
 func skillsHelp() {
 	fmt.Println("\nSkills commands:")
 	fmt.Println("  list                    List installed skills")
-	fmt.Println("  install <repo>          Install skill from GitHub")
 	fmt.Println("  install-builtin          Install all builtin skills to workspace")
 	fmt.Println("  list-builtin             List available builtin skills")
 	fmt.Println("  remove <name>           Remove installed skill")
-	fmt.Println("  search                  Search available skills")
 	fmt.Println("  show <name>             Show skill details")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  mortis-agent skills list")
-	fmt.Println("  mortis-agent skills install sipeed/picoclaw-skills/weather")
 	fmt.Println("  mortis-agent skills install-builtin")
 	fmt.Println("  mortis-agent skills list-builtin")
 	fmt.Println("  mortis-agent skills remove weather")
@@ -1245,27 +1238,6 @@ func skillsListCmd(loader *skills.SkillsLoader) {
 			fmt.Printf("    %s\n", skill.Description)
 		}
 	}
-}
-
-func skillsInstallCmd(installer *skills.SkillInstaller) {
-	if len(os.Args) < 4 {
-		fmt.Println("Usage: mortis-agent skills install <github-repo>")
-		fmt.Println("Example: mortis-agent skills install sipeed/picoclaw-skills/weather")
-		return
-	}
-
-	repo := os.Args[3]
-	fmt.Printf("Installing skill from %s...\n", repo)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	if err := installer.InstallFromGitHub(ctx, repo); err != nil {
-		fmt.Printf("✗ Failed to install skill: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Printf("✓ Skill '%s' installed successfully!\n", filepath.Base(repo))
 }
 
 func skillsRemoveCmd(installer *skills.SkillInstaller, skillName string) {
@@ -1364,39 +1336,6 @@ func skillsListBuiltinCmd() {
 				fmt.Printf("     %s\n", description)
 			}
 		}
-	}
-}
-
-func skillsSearchCmd(installer *skills.SkillInstaller) {
-	fmt.Println("Searching for available skills...")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	availableSkills, err := installer.ListAvailableSkills(ctx)
-	if err != nil {
-		fmt.Printf("✗ Failed to fetch skills list: %v\n", err)
-		return
-	}
-
-	if len(availableSkills) == 0 {
-		fmt.Println("No skills available.")
-		return
-	}
-
-	fmt.Printf("\nAvailable Skills (%d):\n", len(availableSkills))
-	fmt.Println("--------------------")
-	for _, skill := range availableSkills {
-		fmt.Printf("  📦 %s\n", skill.Name)
-		fmt.Printf("     %s\n", skill.Description)
-		fmt.Printf("     Repo: %s\n", skill.Repository)
-		if skill.Author != "" {
-			fmt.Printf("     Author: %s\n", skill.Author)
-		}
-		if len(skill.Tags) > 0 {
-			fmt.Printf("     Tags: %v\n", skill.Tags)
-		}
-		fmt.Println()
 	}
 }
 
