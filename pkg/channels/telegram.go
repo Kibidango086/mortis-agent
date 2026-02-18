@@ -424,9 +424,6 @@ func (c *TelegramChannel) handleStreamMessages(ctx context.Context) {
 }
 
 func (c *TelegramChannel) handleStreamEvent(ctx context.Context, msg bus.StreamMessage) {
-	if msg.SessionKey == "heartbeat" {
-		return
-	}
 
 	chatID, err := parseChatID(msg.ChatID)
 	if err != nil {
@@ -673,10 +670,6 @@ func (c *TelegramChannel) finalizeStreamMessage(ctx context.Context, chatID int6
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	if !c.IsRunning() {
 		return fmt.Errorf("telegram bot not running")
-	}
-
-	if msg.SessionID == "heartbeat" {
-		return nil
 	}
 
 	chatID, err := parseChatID(msg.ChatID)

@@ -49,7 +49,6 @@ type Config struct {
 	Providers ProvidersConfig `json:"providers"`
 	Gateway   GatewayConfig   `json:"gateway"`
 	Tools     ToolsConfig     `json:"tools"`
-	Heartbeat HeartbeatConfig `json:"heartbeat"`
 	Devices   DevicesConfig   `json:"devices"`
 	mu        sync.RWMutex
 }
@@ -78,11 +77,6 @@ type TelegramConfig struct {
 	Proxy      string              `json:"proxy" env:"MORTIS_AGENT_CHANNELS_TELEGRAM_PROXY"`
 	AllowFrom  FlexibleStringSlice `json:"allow_from" env:"MORTIS_AGENT_CHANNELS_TELEGRAM_ALLOW_FROM"`
 	StreamMode bool                `json:"stream_mode" env:"MORTIS_AGENT_CHANNELS_TELEGRAM_STREAM_MODE"`
-}
-
-type HeartbeatConfig struct {
-	Enabled  bool `json:"enabled" env:"MORTIS_AGENT_HEARTBEAT_ENABLED"`
-	Interval int  `json:"interval" env:"MORTIS_AGENT_HEARTBEAT_INTERVAL"` // minutes, min 5
 }
 
 type DevicesConfig struct {
@@ -135,15 +129,15 @@ type WebToolsConfig struct {
 }
 
 type OllamaConfig struct {
-	Enabled  bool   `json:"enabled" env:"MORTIS_AGENT_TOOLS_OLLAMA_ENABLED"`
-	APIKey   string `json:"api_key" env:"MORTIS_AGENT_TOOLS_OLLAMA_API_KEY"`
-	MaxResults int  `json:"max_results" env:"MORTIS_AGENT_TOOLS_OLLAMA_MAX_RESULTS"`
+	Enabled    bool   `json:"enabled" env:"MORTIS_AGENT_TOOLS_OLLAMA_ENABLED"`
+	APIKey     string `json:"api_key" env:"MORTIS_AGENT_TOOLS_OLLAMA_API_KEY"`
+	MaxResults int    `json:"max_results" env:"MORTIS_AGENT_TOOLS_OLLAMA_MAX_RESULTS"`
 }
 
 type ToolsConfig struct {
-	Web   WebToolsConfig   `json:"web"`
-	Exa   ExaConfig        `json:"exa"`
-	Ollama OllamaConfig    `json:"ollama"`
+	Web    WebToolsConfig `json:"web"`
+	Exa    ExaConfig      `json:"exa"`
+	Ollama OllamaConfig   `json:"ollama"`
 }
 
 type ExaConfig struct {
@@ -205,14 +199,10 @@ func DefaultConfig() *Config {
 				APIKey:  "",
 			},
 			Ollama: OllamaConfig{
-				Enabled:   false,
-				APIKey:    "",
+				Enabled:    false,
+				APIKey:     "",
 				MaxResults: 5,
 			},
-		},
-		Heartbeat: HeartbeatConfig{
-			Enabled:  true,
-			Interval: 30, // default 30 minutes
 		},
 		Devices: DevicesConfig{
 			Enabled:    false,
