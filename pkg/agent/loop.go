@@ -54,7 +54,6 @@ type processOptions struct {
 	DefaultResponse string   // Response when LLM returns empty
 	EnableSummary   bool     // Whether to trigger summarization
 	SendResponse    bool     // Whether to send response via bus
-	NoHistory       bool     // If true, don't load session history (for heartbeat)
 	StreamMode      bool     // 是否启用流式模式
 }
 
@@ -241,22 +240,6 @@ func (al *AgentLoop) ProcessDirectWithChannel(ctx context.Context, content, sess
 	}
 
 	return al.processMessage(ctx, msg)
-}
-
-// ProcessHeartbeat processes a heartbeat request without session history.
-// Each heartbeat is independent and doesn't accumulate context.
-func (al *AgentLoop) ProcessHeartbeat(ctx context.Context, content, channel, chatID string) (string, error) {
-	return al.runAgentLoop(ctx, processOptions{
-		SessionKey:      "heartbeat",
-		Channel:         channel,
-		ChatID:          chatID,
-		UserMessage:     content,
-		DefaultResponse: "I've completed processing but have no response to give.",
-		EnableSummary:   false,
-		SendResponse:    false,
-		NoHistory:       true, // Don't load session history for heartbeat
-		StreamMode:      true, // Always use streaming mode
-	})
 }
 
 func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
@@ -573,7 +556,7 @@ func (al *AgentLoop) sendError(opts processOptions, err string) {
 // runAgentLoop is the core message processing logic.
 // It handles context building, LLM calls, tool execution, and response handling.
 func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (string, error) {
-	// 0. Record last channel for heartbeat notifications (skip internal channels)
+	// 0. Record last channel for future proactive notifications (skip internal channels)
 	if opts.Channel != "" && opts.ChatID != "" {
 		// Don't record internal channels (cli, system, subagent)
 		if !constants.IsInternalChannel(opts.Channel) {
@@ -593,13 +576,9 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	// 1. Update tool contexts
 	al.updateToolContexts(opts.Channel, opts.ChatID)
 
-	// 2. Build messages (skip history for heartbeat)
-	var history []providers.Message
-	var summary string
-	if !opts.NoHistory {
-		history = al.sessions.GetHistory(opts.SessionKey)
-		summary = al.sessions.GetSummary(opts.SessionKey)
-	}
+	// 2. Build messages
+	history := al.sessions.GetHistory(opts.SessionKey)
+	summary := al.sessions.GetSummary(opts.SessionKey)
 	messages := al.contextBuilder.BuildMessages(
 		history,
 		summary,
@@ -640,9 +619,8 @@ func (al *AgentLoop) runAgentLoop(ctx context.Context, opts processOptions) (str
 	}
 
 	// 8. Send final response via bus (only in non-stream mode)
-	// Skip heartbeat messages - don't send to user
 	// In stream mode, response is already sent via stream events
-	if opts.SessionKey != "heartbeat" && !opts.StreamMode {
+	if !opts.StreamMode {
 		al.bus.PublishOutbound(bus.OutboundMessage{
 			Channel:   opts.Channel,
 			ChatID:    opts.ChatID,

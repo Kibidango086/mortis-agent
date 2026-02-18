@@ -4,6 +4,7 @@ package stream
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Kibidango086/mortis-agent/pkg/message"
@@ -78,10 +79,33 @@ type Processor struct {
 	SessionID    string
 	MessageID    string
 	CurrentText  *message.TextPart
+	textBuilder  *strings.Builder
 	ReasoningMap map[string]*message.ReasoningPart
+	reasoningBuf map[string]*strings.Builder
 	ToolCalls    map[string]*message.ToolPart
 	ToolCallList []string
+	toolPartCnt  int
 	Parts        []interface{} // All parts in order
+}
+
+var builderPool = sync.Pool{ //nolint:gochecknoglobals // hot-path pooling for stream deltas
+	New: func() interface{} {
+		return &strings.Builder{}
+	},
+}
+
+func acquireBuilder() *strings.Builder {
+	b := builderPool.Get().(*strings.Builder)
+	b.Reset()
+	return b
+}
+
+func releaseBuilder(b *strings.Builder) {
+	if b == nil {
+		return
+	}
+	b.Reset()
+	builderPool.Put(b)
 }
 
 // NewProcessor creates a new stream processor
@@ -89,10 +113,11 @@ func NewProcessor(sessionID, messageID string) *Processor {
 	return &Processor{
 		SessionID:    sessionID,
 		MessageID:    messageID,
-		ReasoningMap: make(map[string]*message.ReasoningPart),
-		ToolCalls:    make(map[string]*message.ToolPart),
-		ToolCallList: make([]string, 0),
-		Parts:        make([]interface{}, 0),
+		ReasoningMap: make(map[string]*message.ReasoningPart, 2),
+		reasoningBuf: make(map[string]*strings.Builder, 2),
+		ToolCalls:    make(map[string]*message.ToolPart, 2),
+		ToolCallList: make([]string, 0, 2),
+		Parts:        make([]interface{}, 0, 4),
 	}
 }
 
@@ -123,8 +148,12 @@ func (p *Processor) ProcessEvent(event Event) (interface{}, error) {
 		return p.handleStepStart(event)
 	case EventStepFinish:
 		return p.handleStepFinish(event)
-	case EventStart, EventFinish:
-		// Lifecycle events - no parts created
+	case EventStart:
+		// Lifecycle start event - no parts created
+		return nil, nil
+	case EventFinish, EventError:
+		p.cleanupBuilders()
+		// Lifecycle finish/error events - no parts created
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unknown event type: %s", event.Type)
@@ -145,6 +174,8 @@ func (p *Processor) handleTextStart(event Event) (*message.TextPart, error) {
 		},
 	}
 	p.CurrentText = part
+	releaseBuilder(p.textBuilder)
+	p.textBuilder = acquireBuilder()
 	p.Parts = append(p.Parts, part)
 	return part, nil
 }
@@ -153,7 +184,10 @@ func (p *Processor) handleTextDelta(event Event) (*message.TextPart, error) {
 	if p.CurrentText == nil {
 		return nil, fmt.Errorf("text-delta without text-start")
 	}
-	p.CurrentText.Text += event.Delta
+	if p.textBuilder == nil {
+		p.textBuilder = acquireBuilder()
+	}
+	p.textBuilder.WriteString(event.Delta)
 	return p.CurrentText, nil
 }
 
@@ -161,7 +195,11 @@ func (p *Processor) handleTextEnd(event Event) (*message.TextPart, error) {
 	if p.CurrentText == nil {
 		return nil, nil
 	}
-	p.CurrentText.Text = trimEnd(p.CurrentText.Text)
+	if p.textBuilder != nil {
+		p.CurrentText.Text = trimEnd(p.textBuilder.String())
+		releaseBuilder(p.textBuilder)
+		p.textBuilder = nil
+	}
 	p.CurrentText.Time.End = time.Now().UnixMilli()
 	result := p.CurrentText
 	p.CurrentText = nil
@@ -186,6 +224,7 @@ func (p *Processor) handleReasoningStart(event Event) (*message.ReasoningPart, e
 		},
 	}
 	p.ReasoningMap[event.ID] = part
+	p.reasoningBuf[event.ID] = acquireBuilder()
 	p.Parts = append(p.Parts, part)
 	return part, nil
 }
@@ -195,7 +234,9 @@ func (p *Processor) handleReasoningDelta(event Event) (*message.ReasoningPart, e
 	if !exists {
 		return nil, nil
 	}
-	part.Text += event.Delta
+	if buf, ok := p.reasoningBuf[event.ID]; ok {
+		buf.WriteString(event.Delta)
+	}
 	if event.ProviderMetadata != nil {
 		part.Metadata = event.ProviderMetadata
 	}
@@ -207,7 +248,11 @@ func (p *Processor) handleReasoningEnd(event Event) (*message.ReasoningPart, err
 	if !exists {
 		return nil, nil
 	}
-	part.Text = trimEnd(part.Text)
+	if buf, ok := p.reasoningBuf[event.ID]; ok {
+		part.Text = trimEnd(buf.String())
+		releaseBuilder(buf)
+		delete(p.reasoningBuf, event.ID)
+	}
 	part.Time.End = time.Now().UnixMilli()
 	if event.ProviderMetadata != nil {
 		part.Metadata = event.ProviderMetadata
@@ -217,7 +262,7 @@ func (p *Processor) handleReasoningEnd(event Event) (*message.ReasoningPart, err
 }
 
 func (p *Processor) handleToolInputStart(event Event) (*message.ToolPart, error) {
-	existing, exists := p.ToolCalls[event.ID]
+	existing, exists := p.ToolCalls[event.ToolCallID]
 	if exists {
 		return existing, nil
 	}
@@ -240,6 +285,7 @@ func (p *Processor) handleToolInputStart(event Event) (*message.ToolPart, error)
 	}
 	p.ToolCalls[event.ToolCallID] = part
 	p.ToolCallList = append(p.ToolCallList, event.ToolCallID)
+	p.toolPartCnt++
 	p.Parts = append(p.Parts, part)
 	return part, nil
 }
@@ -381,6 +427,15 @@ func (p *Processor) handleStepFinish(event Event) (*message.StepFinishPart, erro
 	return part, nil
 }
 
+func (p *Processor) cleanupBuilders() {
+	releaseBuilder(p.textBuilder)
+	p.textBuilder = nil
+	for id, buf := range p.reasoningBuf {
+		releaseBuilder(buf)
+		delete(p.reasoningBuf, id)
+	}
+}
+
 // GetParts returns all parts
 func (p *Processor) GetParts() []interface{} {
 	return p.Parts
@@ -388,7 +443,7 @@ func (p *Processor) GetParts() []interface{} {
 
 // GetToolCalls returns completed tool calls for View Details
 func (p *Processor) GetToolCalls() []message.ExecutionStep {
-	var steps []message.ExecutionStep
+	steps := make([]message.ExecutionStep, 0, p.toolPartCnt)
 	for _, part := range p.Parts {
 		if toolPart, ok := part.(*message.ToolPart); ok {
 			step := message.ExecutionStep{
@@ -437,12 +492,13 @@ func (p *Processor) HasToolCalls() bool {
 }
 
 func trimEnd(s string) string {
-	return trimRight(s, " \n\t\r")
-}
-
-func trimRight(s string, cutset string) string {
-	for len(s) > 0 && strings.Contains(cutset, string(s[len(s)-1])) {
-		s = s[:len(s)-1]
+	for len(s) > 0 {
+		switch s[len(s)-1] {
+		case ' ', '\n', '\t', '\r':
+			s = s[:len(s)-1]
+		default:
+			return s
+		}
 	}
 	return s
 }
